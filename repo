@@ -1,0 +1,368 @@
+#!/bin/bash
+# Embedded Linux Platform Build
+# Copyright (C) 2015  Nokia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+set -eu
+
+BUGMAIL='rschiele@gmail.com'
+
+rootgit()
+{
+    git "$@"
+}
+
+populatesubs()
+{
+    SUBS=()
+    FULLSUBS=()
+    SUB_OFF=()
+    SUB_ON=()
+    SUB_MOD=()
+    for i in "$@"; do
+	case "$i" in
+	    src/*)
+		SUBS[${#SUBS[@]}]="${i/src\/}"
+		FULLSUBS[${#FULLSUBS[@]}]="$i"
+		;;
+	    *)
+		SUBS[${#SUBS[@]}]="$i"
+		FULLSUBS[${#FULLSUBS[@]}]="src/$i"
+		;;
+	esac
+    done
+    git submodule init
+    for i in $(git submodule status ${FULLSUBS[@]-} | sed -e 's|\(.\)\([0-9a-f]*\) \([^ ]*\).*|\1,\3|' | tr ' ' .); do
+	case "$i" in
+	    +,*) SUB_MOD[${#SUB_MOD[@]}]="${i/+,src\/}";;
+	    -,*) SUB_OFF[${#SUB_OFF[@]}]="${i/-,src\/}";;
+	    .,*) SUB_ON[${#SUB_ON[@]}]="${i/.,src\/}";;
+	    *) echo Error parsing git submodule status.; exit 1;;
+	esac
+    done
+}
+
+pull()
+{
+    if test -r .basehash.linux; then
+	basehash=$(cat .basehash.linux)
+    else
+	basehash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"linux"'$|\1|p')
+    fi
+    git pull
+    if test -d .git/hooks -a -d hooks; then
+	for i in hooks/*; do
+	    rm -f ".git/$i"
+	    cp -a "$i" ".git/$i"
+	done
+    fi
+    populatesubs "$@"
+    if test ${#SUB_MOD[@]} != 0; then
+	for PRJ in "${SUB_MOD[@]}"; do
+	    if (
+		cd src/$PRJ
+		git log --decorate |
+		head -n 1 |
+		grep -q _persistent/ ||
+		git fetch
+		git log --decorate |
+		head -n 1 |
+		grep -q _persistent/
+	    ); then
+		#echo "refreshing checked out $PRJ..."
+		git submodule update --init src/$PRJ || true
+		case "$PRJ" in
+		    linux)
+			rm -f .basehash.linux
+			basehash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"linux"'$|\1|p')
+			;;
+		esac
+	    else
+		echo "NOT refreshing $PRJ with local modifications!"
+		case "$PRJ" in
+		    linux)
+			echo "$basehash" > .basehash.linux
+			;;
+		esac
+	    fi
+	done
+    fi
+}
+
+push()
+{
+    pull "$@"
+    if test ${#SUB_MOD[@]} = 0; then
+	echo No modifications to push.
+	exit 1
+    fi
+    cat <<EOT > .tmp.alllogs
+# Create a commit message from all the commits below and
+=== DELETE AT LEAST THIS LINE ===
+
+EOT
+    ALLDIRS=
+    includeslinux=0
+    for i in "${SUB_MOD[@]}"; do
+	echo "$i"
+	ALLDIRS="$ALLDIRS src/$i"
+	uphash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"$i"'$|\1|p')
+	cd src/$i
+	case "$i" in
+	    linux)
+		includeslinux=1
+		downhash=$(git show-ref --head | sed -ne 's| HEAD$||p')
+		if test $basehash = $uphash; then
+		    uptype=none
+		elif test $(git merge-base $basehash $uphash) = $basehash; then
+		    uptype=ff
+		else
+		    uptype=complex
+		fi
+		if test $basehash = $downhash; then
+		    downtype=none
+		elif test $(git merge-base $basehash $downhash) = $basehash; then
+		    downtype=ff
+		else
+		    downtype=complex
+		fi
+		if test $downtype = none -o $uphash = $downhash; then
+		    git checkout $uphash
+		elif test $uptype = none -o $downtype = ff; then
+		    if test $uptype != none; then
+		        git rebase --onto $uphash $basehash $downhash
+		    fi
+		    git log --no-merges --format=format:'# commit %h from linux%n%s%n%n%b' $basehash..$downhash >> ../../.tmp.alllogs
+		else
+		    if test $uptype = ff; then
+		        cat <<EOT
+You did a complex change but upstream there were a few commits you may
+want to merge into your tree before continuing:
+
+EOT
+		        git log --oneline $basehash..$uphash
+		    else
+		        cat <<EOT
+You did a complex change but upstream there was also a complex change.
+Thus you may want to merge things together before continuing.
+EOT
+		    fi
+		    echo
+		    exit 1
+		fi
+		;;
+	    *)
+		if ! git merge -m '[repo push] automated merge' $uphash; then
+		    cat <<EOT
+Automated merge failed.
+
+Do this:
+\$ cd $PWD
+[ merge conflicts ]
+[ git add conflicting files ]
+\$ git commit
+
+After having that completed rerun this tool.
+EOT
+		    rm .tmp.alllogs
+		    exit 1
+		fi
+		git log --no-merges --format=format:"# commit %h from $i%n%s%n%n%b" $uphash..HEAD >> ../../.tmp.alllogs
+		;;
+	esac
+	git push origin +HEAD:refs/heads/tmp
+	cd ../..
+    done
+    git commit -t .tmp.alllogs $ALLDIRS
+    if ! git push; then
+	cat <<EOT
+It seems the push failed. :(
+
+Typically you should get an idea of what went wrong from the git message.
+
+This might be a problem with atomicity of the operation. In that case you
+may just try to rerun this tool.
+
+If this does not help and you need further assistance please send a mail
+to $BUGMAIL with the command line and the output of this
+tool and all other information that you think might be useful to diagnose
+this issue. 
+EOT
+    fi
+    rm .tmp.alllogs
+    case "$i" in
+	linux)
+	    rm -f .basehash.linux
+	    ;;
+    esac
+}
+
+status()
+{
+    populatesubs "$@"
+    if test ${#SUB_MOD[@]} != 0; then
+	echo modified: "${SUB_MOD[@]}"
+    fi
+    if test ${#SUB_ON[@]} != 0; then
+	echo unmodified: "${SUB_ON[@]}"
+    fi
+    if test ${#SUB_OFF[@]} != 0; then
+	echo not checked out: "${SUB_OFF[@]}"
+    fi
+}
+
+drop()
+{
+    local force=0
+    if test $# -gt 0; then
+	if test "$1" = -f; then
+	    force=1
+	    shift
+	fi
+    fi
+    populatesubs "$@"
+    if test ${#SUB_MOD[@]} != 0; then
+	if test $force = 0; then
+	    echo "Local modifications exit in ${SUB_MOD[@]}, use -f for force."
+	    exit 1
+	fi
+	for PRJ in "${SUB_MOD[@]}"; do
+	    if test "$PRJ" = buildtool; then
+		echo 'Not dropping buildtool.'
+	    else
+		echo dropping $PRJ
+		rm -rf src/$PRJ
+		mkdir src/$PRJ
+	    fi
+	done
+    fi
+    if test ${#SUB_ON[@]} != 0; then
+	for PRJ in "${SUB_ON[@]}"; do
+	    if test "$PRJ" = buildtool; then
+		echo 'Not dropping buildtool.'
+	    else
+		echo dropping $PRJ
+		rm -rf src/$PRJ
+		mkdir src/$PRJ
+	    fi
+	done
+    fi
+}
+
+fetch()
+{
+    populatesubs "$@"
+    if test ${#SUB_MOD[@]} != 0; then
+	echo Not fetching ${SUB_MOD[@]}, use pull instead.
+    fi
+    if test ${#SUB_OFF[@]} != 0; then
+	for PRJ in "${SUB_OFF[@]}"; do
+	    echo fetching $PRJ
+	    git submodule update src/$PRJ
+	done
+    fi
+}
+
+switch()
+{
+    if test $# != 1; then
+	echo >&2 repo switch takes exactly one branch name as parameter.
+	exit 1
+    fi
+    local branch="$1"
+    git fetch
+    if ! git show "origin/$branch" >/dev/null 2>/dev/null; then
+	echo >&2 Unknown branch: $branch
+	exit 1
+    fi
+    if ! git show "$branch" >/dev/null 2>/dev/null; then
+	echo git branch -t "$branch" "origin/$branch"
+    fi
+    git checkout "$branch"
+    pull
+}
+
+diff()
+{
+    git --no-pager diff --ignore-submodules --no-prefix "$@"
+    git --no-pager diff --raw "$@" src | while read MODEA MODEB HASHA HASHB MODTYPE MODULE; do
+	if test \
+	    "$MODEA" = ":160000" -a \
+	    "$MODEB" = "160000" -a \
+	    "$MODTYPE" = "M"; then
+	    (
+		cd $MODULE
+		test "$HASHB" != 0000000... || HASHB=
+		git --no-pager diff --src-prefix=$MODULE/ --dst-prefix=$MODULE/ ${HASHA/...} ${HASHB/...}
+	    )
+	else
+	    echo "WARNING: Unhandled change $MODEA $MODEB $HASHA $HASHB $MODTYPE $MODULE"
+	fi
+    done
+}
+
+usage()
+{
+    cat <<EOT
+Usage:
+  repo diff <commit>{0,2}     Calculate a global diff. The specified coommits
+                              follow the same rules as for the regular
+                              git diff command.
+  repo drop [-f] [SUBMODULE]... Delete the checked out sources for the
+                              specified submodules from the local disk.  If no
+                              submodule is specified delete all sources.  To
+                              delete sources with local commits the option -f
+                              needs to be specified.
+  repo fetch [SUBMODULE]...   Check out sources for the specified submodules.
+                              If no submodule is specified check out all
+                              sources.
+  repo git [PARAM]...         Invoke git with the specified parameters PARAM
+                              from the root of the source repository.
+  repo pull [SUBMODULE]...    Pull the changes for the specified submodules
+                              from the server.  If no submodule is specified
+                              pull the changes for all submodules.
+  repo push [SUBMODULE]...    Push all changes for the specified submodules
+                              to the server.  If no submodule is specified
+                              push all changes for all submodules.
+  repo status [SUBMODULE]...  Print the status for the specified submodules.
+                              If no submodule is specified print overall
+                              status.
+  repo switch [BRANCH]        Switch to specified branch.
+  repo help                   Print this message and exit.
+
+Report bugs to <$BUGMAIL>
+EOT
+    exit $1
+}
+
+cd "$(dirname $0)"
+test $# != 0 || usage 1
+CMD=$1
+shift
+case "$CMD" in
+    diff)        diff "$@";;
+    drop)        drop "$@";;
+    fetch)       fetch "$@";;
+    git)         rootgit "$@";;
+    pull)        pull "$@";;
+    push)        push "$@";;
+    status)      status "$@";;
+    switch)      switch "$@";;
+    help|--help) usage 0;;
+    *)
+	echo Unknown command $CMD
+	;;
+esac
+echo done.

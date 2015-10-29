@@ -1,0 +1,1162 @@
+#!/bin/bash
+# Embedded Linux Platform Build
+# Copyright (C) 2015  Nokia
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+set -eu
+
+export LC_ALL=C
+
+case $0 in
+    /*) srcbase=$(dirname $0);;
+    *) srcbase=$(dirname $PWD/$0);;
+esac
+recipes=$srcbase/recipes
+src=$srcbase/src
+
+base="$PWD"
+obj=$base/builds
+states=$base/states
+log=$base/logs
+pool=$base/pool
+tmp=$base/tmp
+BUGMAIL='rschiele@gmail.com'
+DEFAULTFORMAT="tar.gz"
+
+parallel=-j$(nproc)
+
+logmsg()
+{
+    echo "[$(date '+%F %T')] $@"
+}
+
+lognmsg()
+{
+    echo -n "[$(date '+%F %T')] $@"
+}
+
+logerr()
+{
+    logmsg >&2 "$@"
+}
+
+forcerm()
+{
+    rm -rf "$1" 2>/dev/null || chmod -R u+rwx "$1" 2>/dev/null && rm -rf "$1"
+}
+
+genhash()
+{
+    local FILE
+    for FILE in "$@"; do
+	FILE=${FILE/<SOURCE>/$src}
+	FILE=${FILE/<RECIPE>/$recipes}
+	FILE=${FILE/<STATE>/$states}
+	FILE=${FILE/<POOL>/$pool}
+        if test -f $FILE; then
+            sha1sum $FILE
+	elif test -d "$FILE" -a "$dirty" = 1; then
+	    echo "efefefefefefefefefefefefefefefefefefefef $FILE"
+        elif test -e $FILE/.git; then
+            (
+		flock -s 200
+                cd $FILE
+                git show-ref --head | sed -ne 's| HEAD$| '"$FILE"'|p'
+	    ) 200>"$states/_lock/src/$(basename "$FILE")"
+        elif test -f $FILE/.gitcommitid; then
+            sed -ne 's|$| '"$FILE"'|p' $FILE/.gitcommitid
+	else
+	    case $FILE in
+		$src/*)
+		    (
+			cd $srcbase
+			git cat-file -p HEAD:src |
+			sed -ne "s|^160000 commit \(.\{40\}\).\(${FILE/$src\/}\)\$|\1 <SOURCE>/\2|p"
+		    )
+		    ;;
+		*)
+		    echo "efefefefefefefefefefefefefefefefefefefef $FILE"
+		    ;;
+	    esac
+        fi
+    done | sed -e "s|  *$src/| <SOURCE>/|
+		   s|  *$recipes/| <RECIPE>/|
+		   s|  *$states/| <STATE>/|
+		   s|  *$pool/| <POOL>/|"
+}
+
+srcvers()
+{
+    local FILE="$1"
+    if test -e $FILE/.git; then
+	(
+	    cd $FILE
+	    git describe --always --tags --match '_release/*' | sed -e 's|^_release/||'
+	)
+    elif test -f $FILE/.gitversion; then
+	cat $FILE/.gitversion
+    else
+	echo unknown
+    fi
+}
+
+makelist()
+{
+    local FILE="$(echo "$1" | sed -e 's|/*$||')"
+    local PARAM="$2"
+    local OPT="$3"
+    find $destdir$RELOC$FILE $PARAM 2>/dev/null | sed -e "s|^$destdir||" | grep -v '^'"$RELOC"'$' | LC_ALL=C sort >> $tmp/list.$PKG
+    if test "$OPT" != 1 -a ${PIPESTATUS[0]} != 0; then
+	logerr "$PKG: $FILE: No such file or directory"
+	false
+    fi
+}
+
+newpkg()
+{
+    PKG="$(eval "echo $1")"
+    RELOC="$(eval "echo $2")"
+    PKGS[${#PKGS[@]}]="$PKG"
+    PKGLIST[${#PKGLIST[@]}]="$tmp/list.$PKG"
+    RELOCS[${#RELOCS[@]}]="$RELOC"
+    AUTO[${#AUTO[@]}]=
+    FORMAT[${#FORMAT[@]}]="$DEFAULTFORMAT"
+    rm -f $tmp/list.$PKG $pool/$PKG.newmeta
+    touch $tmp/list.$PKG $pool/$PKG.newmeta
+    genhash $states/$target/$recipe/hash | sed -e 's|/hash$|/done|' > $pool/$PKG.newmeta
+    cat "$blddir/.meta" >> $pool/$PKG.newmeta
+}
+
+comp()
+{
+    local REF="$1"
+    local ERRSTR="$2"
+    diff "$REF" <(LC_ALL=C sort -u "${PKGLIST[@]}") | sed -ne 's|^< ||p' > $tmp/list.err
+    if test ${PIPESTATUS[0]} != 0; then
+	logerr "$ERRSTR"
+	cat >&2 $tmp/list.err
+	rm $tmp/list.err
+	false
+    fi
+    rm $tmp/list.err
+}
+
+hashfilelist()
+{
+    local filetohash
+    local tmpdir
+    local abspath
+    cd $1
+    while read filetohash; do
+	echo "$filetohash"
+	stat -c %f "$filetohash"
+	if test -h "$filetohash"; then
+	    readlink "$filetohash" | sha1sum | sed -e 's| .*||'
+	elif test -f "$filetohash"; then
+	    case "$filetohash" in
+		*.a)
+		    tmpdir=$(mktemp -d)
+		    abspath="$PWD/$filetohash"
+		    (
+			cd "$tmpdir"
+			ar x "$abspath"
+			find . | sort | hashfilelist $PWD
+		    )
+		    forcerm "$tmpdir"
+		    ;;
+		*.tar|*.cpio|*.gz|*.tgz|*.bz2|*.tbz|*.tbz2|*.tb2|*.Z|*.taz|*.lz|*.lzma|*.tlz|*.xz|*.txz)
+		    tmpdir=$(mktemp -d)
+		    cat "$filetohash" |
+		    case "$filetohash" in
+			*.tar|*.cpio)
+			    cat
+			    ;;
+			*.gz|*.tgz)
+			    gzip -cd
+			    ;;
+			*.bz2|*.tbz|*.tbz2|*.tb2)
+			    bzip2 -cd
+			    ;;
+			*.Z|*.taz)
+			    compress -cd
+			    ;;
+			*.lz|*.lzma|tlz)
+			    lzma -cd
+			    ;;
+			*.xz|txz)
+			    xz -cd
+			    ;;
+		    esac |
+		    case "$filetohash" in
+			*.tar|*.tar.gz|*.tar.bz2|*.tar.Z|*.tar.lz|*.tar.lzma|*.tar.xz|*.tgz|*.tbz|*.tbz2|*.tb2|*.taz|*.tlz|*.txz)
+			    (
+				cd "$tmpdir"
+				tar -x -k -p
+				find . | sort | hashfilelist $PWD
+			    )
+			    ;;
+			*.cpio|*.cpio.gz|*.cpio.bz2|*.cpio.Z|*.cpio.lz|*.cpio.lzma|*.cpio.xz)
+			    (
+				cd "$tmpdir"
+				cpio -imd --quiet
+				find . | sort | hashfilelist $PWD
+			    )
+			    ;;
+			*.gz|*.bz2|*.Z|*.lz|*.lzma|*.xz)
+			    sha1sum | sed -e 's| .*||'
+			    ;;
+		    esac
+		    forcerm "$tmpdir"
+		    ;;
+		*)
+		    sha1sum "$filetohash" | sed -e 's| .*||'
+		    ;;
+	    esac
+	fi
+    done | sha1sum | sed -e 's| .*||'
+}
+
+package()
+{
+    mkdir -p $pool $tmp
+    local PKG
+    local RELOC
+    local T1
+    local T2
+    local FILE
+    local RELOCINP
+    local PKGS=()
+    local RELOCS=()
+    local PKGLIST=()
+    local AUTO=()
+    local FORMAT=()
+    newpkg full ''
+    makelist '' '' 0
+    PKGS=()
+    RELOCS=()
+    PKGLIST=()
+    AUTO=()
+    FORMAT=()
+    while read T1 T2 FILE RELOCINP; do
+	if test "$T1" = '#|pkg'; then
+	    case "$T2" in
+		name)
+		    newpkg $FILE "$RELOCINP"
+		    ;;
+		'+')
+		    makelist "$FILE" '' 0
+		    ;;
+		'.')
+		    makelist "$FILE" '-maxdepth 0' 0
+		    ;;
+		'+?')
+		    makelist "$FILE" '' 1
+		    ;;
+		'.?')
+		    makelist "$FILE" '-maxdepth 0' 1
+		    ;;
+		dep)
+		    echo dep "$(eval "echo $FILE $RELOCINP")" >> $pool/$PKG.newmeta
+		    ;;
+		auto)
+		    AUTO[${#AUTO[@]}-1]="$(eval "echo $FILE")"
+		    ;;
+		format)
+		    FORMAT[${#FORMAT[@]}-1]="$(eval "echo $FILE")"
+		    ;;
+		*)
+		    echo "Unknown package tag: $T2".
+		    exit 1
+		    ;;
+	    esac
+	fi
+    done
+    # remove phantoms created by symlinks
+    for ((NUM=0; NUM < ${#PKGS[@]}; ++NUM)); do
+	diff $tmp/list.full <(LC_ALL=C sort "${PKGLIST[NUM]}") |
+	sed -ne 's|> ||p' |
+	diff - <(LC_ALL=C sort "${PKGLIST[NUM]}") |
+	sed -ne 's|> ||p' > $tmp/list.tmp
+	mv $tmp/list.tmp "${PKGLIST[NUM]}"
+    done
+    comp <(LC_ALL=C sort "${PKGLIST[@]}") "Packaged twice:"
+    comp $tmp/list.full "Not packaged:"
+    rm -f $tmp/list.full $pool/full.newmeta $pool/nopackage.newmeta
+    for ((NUM=0; NUM < ${#PKGS[@]}; ++NUM)); do
+	if test ${PKGS[NUM]} != nopackage; then
+	    logmsg packaging ${PKGS[NUM]} ${RELOCS[NUM]}
+	    echo "format ${FORMAT[NUM]}" >> $pool/${PKGS[NUM]}.newmeta
+	    test "${AUTO[NUM]}" &&
+	    while read FILE; do
+		readelf -d "$destdir$FILE" 2>/dev/null |
+		sed -ne 's|\.|-|g
+			 s|^ 0x0*1 .*\[\(lib.*\).so\(-.*\)\]$|dep '"${AUTO[NUM]}"'-\1\2|p
+			 s|^ 0x0*1 .*\[ld.*$|dep '"${AUTO[NUM]}"'-libc-6|p'
+		case "$FILE" in
+		    ${RELOCS[NUM]}/usr/lib/lib*.so|\
+		    ${RELOCS[NUM]}/usr/lib64/lib*.so)
+			readelf -d "$destdir$FILE" 2>/dev/null |
+			sed -ne 's|\.|-|g
+				 s|^ 0x0*e .*\[\(lib.*\).so\(-.*\)\]$|dep '"${AUTO[NUM]}"'-\1\2|p
+				 s|^ 0x0*e .*\[ld.*$|dep '"${AUTO[NUM]}"'-libc-6|p'
+			;;
+		esac
+	    done < ${PKGLIST[NUM]} | sort -u >> $pool/${PKGS[NUM]}.newmeta
+	    rm -f "$pool/${PKGS[NUM]}.${FORMAT[NUM]}"
+	    echo payload $(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]} |
+		    hashfilelist $destdir${RELOCS[NUM]}) >> $pool/${PKGS[NUM]}.newmeta
+	    case "${FORMAT[NUM]}" in
+		tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz)
+		    tar -c -C $destdir${RELOCS[NUM]} --no-recursion --owner=0 --group=0 -T <(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]})
+		    ;;
+		cpio|cpio.*)
+		    sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]} |
+		    (
+			cd $destdir${RELOCS[NUM]}
+			cpio -o -R 0:0 -H newc --quiet
+		    )
+		    ;;
+		*)
+		    logerr "Unsupported file format: ${FORMAT[NUM]}"
+		    exit 1
+		    ;;
+	    esac |
+	    case "${FORMAT[NUM]}" in
+		tar|cpio)
+		    cat
+		    ;;
+		*.gz|tgz)
+		    gzip -cn9
+		    ;;
+		*.bz2|tbz|tbz2|tb2)
+		    bzip2 -c9
+		    ;;
+		*.Z|taz)
+		    compress -c
+		    ;;
+		*.lz|*.lzma|tlz)
+		    lzma -c9
+		    ;;
+		*.xz|txz)
+		    xz -c9
+		    ;;
+		*)
+		    logerr "Unsupported file format: ${FORMAT[NUM]}"
+		    exit 1
+		    ;;
+	    esac > "$pool/${PKGS[NUM]}.${FORMAT[NUM]}"
+	    mv $pool/${PKGS[NUM]}.newmeta $pool/${PKGS[NUM]}.meta
+	fi
+    done
+    logmsg Packaging successfully completed.
+}
+
+resolve_ins()
+{
+    local T1
+    local PKG
+    local RELOC
+    local PKG2
+    local RELOC2
+
+    > $tmp/metatmp
+    > $tmp/metablk
+    while read T1 PKG RELOC; do
+	if test "$T1" = '#|ins'; then
+	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metatmp
+	fi
+	if test "$T1" = '#|blk'; then
+	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metablk
+	fi
+    done
+
+    while true; do
+	cp $tmp/metatmp $tmp/metaold
+	while read PKG RELOC; do
+	    echo $PKG $RELOC
+	    sed -ne 's|^dep ||p' $pool/$PKG.meta |
+	    while read PKG2 RELOC2; do
+		echo $PKG2 $RELOC$RELOC2
+	    done
+	done < $tmp/metaold | LC_ALL=C sort -u > $tmp/metatmp
+	diff $tmp/metaold $tmp/metatmp >/dev/null 2>/dev/null && break
+    done
+
+    diff $tmp/metatmp <(LC_ALL=C sort -u $tmp/metablk) | sed -ne 's|< ||p'
+
+    rm $tmp/metatmp $tmp/metaold $tmp/metablk
+}
+
+installer()
+{
+    local PKG
+    local RELOC
+    local FORMAT
+
+    forcerm $srcdir
+    mkdir -p $srcdir/.meta
+    resolve_ins | 
+    while read PKG RELOC; do
+	logmsg installing $PKG $RELOC
+	mkdir -p $srcdir$RELOC
+	FORMAT=$(sed -ne 's|^format ||p' $pool/$PKG.meta)
+	test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
+	cp $pool/$PKG.meta $srcdir/.meta
+	cat $pool/$PKG.$FORMAT |
+	case "$FORMAT" in
+	    tar|cpio)
+		cat
+		;;
+	    *.gz|tgz)
+		gzip -cd
+		;;
+	    *.bz2|tbz|tbz2|tb2)
+		bzip2 -cd
+		;;
+	    *.Z|taz)
+		compress -cd
+		;;
+	    *.lz|*.lzma|tlz)
+		lzma -cd
+		;;
+	    *.xz|txz)
+		xz -cd
+		;;
+	    *)
+		logerr "Unsupported file format: $FORMAT"
+		exit 1
+		;;
+	esac |
+	case "$FORMAT" in
+	    tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz)
+		tar -C $srcdir$RELOC -x -k -p
+		;;
+	    cpio|cpio.*)
+		(
+		    cd $srcdir$RELOC
+		    cpio -imd --quiet
+		)
+		;;
+	    *)
+		logerr "Unsupported file format: $FORMAT"
+		exit 1
+		;;
+	esac
+    done
+    logmsg Installation of requirements successfully completed.
+}
+
+getrecipe()
+{
+    local recipe=$1
+    local target=$2
+
+    if test -r $recipes/${recipe}_$target; then
+        echo $recipes/${recipe}_$target
+    elif test -r $recipes/$recipe; then
+        echo $recipes/$recipe
+    fi
+}
+
+srcinstaller()
+{
+    local SRC
+    local PTH
+    local srcdst
+    rm -f "$blddir/.meta"
+    touch "$blddir/.meta"
+    awk '/^#\|src /{ print $2" "$3 }' |
+    while read SRC PTH; do
+	logmsg installing sources $SRC $PTH
+	case "$PTH" in
+	    //none) continue;;
+	    /*) srcdst="$srcdir$PTH";;
+	    *) srcdst="$blddir/$PTH";;
+	esac
+	mkdir -p "$srcdst"
+	(
+	    flock -x 200
+	    if ! test "$(ls -A $src/$SRC)"; then
+		cd $srcbase
+		git submodule update src/$SRC
+	    fi
+	) 200>"$states/_lock/src/$SRC"
+	(
+	    flock -s 200
+	    cd $src/$SRC
+	    if test -e .git -a "$dirty" != 1; then
+		git archive --format=tar HEAD
+	    else
+		tar -c --exclude=./.git .
+	    fi
+	) 200>"$states/_lock/src/$SRC" |
+	tar -C "$srcdst" -x -k
+	echo src $(genhash $src/$SRC)-$(srcvers $src/$SRC) | sed -e 's|<SOURCE>/||' >> "$blddir/.meta"
+    done
+}
+
+exithandler()
+{
+    if ! test -f "$states/$target/$recipe/done"; then
+	cat <<EOT
+>>>
+>>> Building of $recipe for target $target failed.
+>>>
+EOT
+	if ! test "$verbose"; then
+	    gzip -cd < "$log/$target-$recipe.log.gz"
+	fi
+    fi
+}
+
+logger()
+{
+    local logfile="$1"
+    if test "$verbose"; then
+	tee >(gzip -c9 > "$logfile")
+    else
+	gzip -c9 > "$logfile"
+    fi
+}
+
+listarchs()
+{
+    (
+	echo all
+	sed -ne 's/^#|dep \+.* \+//p' $recipes/*
+    ) | sort -u
+}
+
+listpkgs()
+{
+    local ARCHS=$(listarchs)
+    local ARCHSED=
+    local target
+    local recipe
+    for target in $ARCHS; do
+	if test "$ARCHSED"; then
+	    ARCHSED="$ARCHSED\|$target"
+	else
+	    ARCHSED="$target"
+	fi
+    done
+    for recipe in $(ls $recipes); do
+	echo $recipe | sed -e "s,_\($ARCHSED\)\$,,"
+    done | sort -u
+}
+
+calcdeps()
+{
+    local ARCHS=$(listarchs)
+    local target
+    local recipe
+    local file
+    local PKGS=$(listpkgs)
+    cat <<'EOT'
+ifneq ($(BUILD),echo)
+T := $(shell $(MAKE) $(MAKECMDGOALS) --no-print-directory \
+	-rRf $(firstword $(MAKEFILE_LIST)) \
+	BUILD=echo PROGRESS=X | wc -l)
+N := x
+C = $(words $N)$(eval N := x $N)
+PROGRESS = `expr $C '*' 100 / $T`
+endif
+EOT
+    for recipe in $PKGS; do
+	for target in $ARCHS; do
+	    cat <<EOT
+.PHONY: $target/$recipe
+$target/$recipe:
+	@+\$(BUILD) --progress="\$(PROGRESS)" --build-internal $recipe $target
+EOT
+	    file=$(getrecipe $recipe $target)
+	    if test "$file"; then
+		awk '/^#\|dep /{if ($3) { print $2" "$3 }
+				else    { print $2" '"$target"'" }}' $file |
+		while read PKG TGT; do
+		    test "$PKG" = auto || echo $target/$recipe: $TGT/$PKG
+		done
+		grep '^#|ins ' $file | while read A B C; do
+		    PKG=_PKG/$(eval echo $B)
+		    echo .PHONY: $PKG
+		    echo $target/$recipe: $PKG
+		    echo $PKG:
+		done
+		grep '^#|pkg name ' $file | while read A B C D; do
+		    if test "$C" != nopackage; then
+			PKG=_PKG/$(eval echo $C)
+			echo .PHONY: $PKG
+			echo $PKG: $target/$recipe
+		    fi
+		done
+	    fi
+	done
+    done
+}
+
+invoke()
+{
+    local recipe="$1"
+    shift
+    local target="$1"
+    shift
+    local file
+    local lfile
+    local settings
+    local hashes
+    local oldrecipes
+    local usedrecipes
+    local pkghash
+    local srcdir=$obj/$target/$recipe/srcdir
+    local blddir=$obj/$target/$recipe/build
+    local destdir=$obj/$target/$recipe/destdir
+    mkdir -p $states/_lock/src
+    if ! test -r "$states/$target/$recipe/done" ||
+	! diff "$states/$target/$recipe/done" <(genhash $(awk '{print $2}' "$states/$target/$recipe/done" || true)
+	) > /dev/null 2> /dev/null; then
+        mkdir -p "$states/$target/$recipe"
+	settings=$(getrecipe settings $target)
+	file=$(getrecipe $recipe $target)
+        if test "$file" = ""; then
+	    logerr "Nothing known about $recipe on $target."
+	    return 1
+	fi
+	usedrecipes="$settings $file"
+	oldrecipes=
+	while test "$oldrecipes" != "$usedrecipes"; do
+	    oldrecipes="$usedrecipes"
+            usedrecipes="$( ( for h in $usedrecipes; do echo $h; done; awk '
+	    /^#\|rcp /{ print "'"$recipes"'/"$2 } ' $usedrecipes ) | sort -u)"
+        done
+	local tmp=$obj/$target/$recipe/tmp
+	mkdir -p $tmp
+        hashes="$(for h in $usedrecipes $recipes/settings_$target $recipes/${recipe}_$target; do
+		echo $h; done | sort -u) $(resolve_ins < $file |
+	    sed -e "s|^\([^ ]*\).*|$pool/\1.meta|") $(awk '
+            /^#\|src /{ print "'"$src"'/"$2 } ' $usedrecipes)"
+	forcerm $tmp
+	genhash $hashes > "$states/$target/$recipe/hash"
+	local pkghash=$(sha1sum "$states/$target/$recipe/hash" | sed -e "s|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) .*|$target/$recipe/\1/\2|")
+	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
+	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
+	    mkdir -p $pool
+	    for i in $PKGPOOL/.hashpool/$pkghash/*; do
+		if test -r "$i"; then
+		    rm -f "$pool/$(basename $i)"
+		    $prepopulatebin "$i" "$pool/"
+		fi
+	    done
+	    mv "$states/$target/$recipe/hash" "$states/$target/$recipe/done"
+	else
+	    logmsg "$(printf '[%3u%%]' $progress) Building $target/$recipe"
+	    forcerm "$obj/$target/$recipe"
+	    mkdir -p "$blddir" "$log"
+	    mkdir -p -m 00755 $destdir
+            trap exithandler 0
+	    set -o pipefail
+            (
+		set +o pipefail
+		tmp="$blddir/.pkg"
+		mkdir "$tmp"
+		installer < $file
+		cat $usedrecipes | srcinstaller
+		forcerm "$tmp"
+		PS4='+ \D{%F %T} \w> '
+		cd "$blddir"
+		(
+		    set -x
+		    for lfile in $settings $file; do
+			. "$lfile"
+		    done
+		    touch "$blddir/.success"
+		)
+		test -r "$blddir/.success"
+		mkdir -p "$tmp"
+		touch "$tmp/dynamic"
+		grep -h '^#|' $file "$tmp/dynamic" | package
+		mv "$states/$target/$recipe/hash" "$states/$target/$recipe/done"
+            ) 2>&1 | logger "$log/$target-$recipe.log.gz"
+	    set +o pipefail
+	    trap '' 0
+	    exithandler
+	    test -f "$states/$target/$recipe/done"
+	    if ! test "$keepbuilds"; then
+		forcerm "$obj/$target/$recipe"
+	    fi
+	fi
+    fi
+}
+
+purgebuilds()
+{
+    logmsg Purging build directories
+    forcerm $obj
+}
+
+purgepool()
+{
+    local i
+    local FILE
+    local BASE
+
+    logmsg Purging pool
+
+    diff <(
+	for i in $pool/*.meta; do
+	    local STATEFILE=$(head -n 1 $i |
+		sed -e "s|.* <STATE>|$states|")
+	    if test -r "$STATEFILE" -a \
+		"$(sha1sum "$STATEFILE" | awk '{print $1}')" = \
+		"$(head -n 1 $i | awk '{print $1}')"; then
+		echo $i
+		BASE=$pool/$(basename $i .meta)
+		(
+		    sed -ne "s|^format |$BASE.|p" $i
+		    echo $BASE.tar.gz
+		) | head -n 1
+	    fi
+	done | sort
+	) <(ls -d $pool/* | sort) |
+    sed -ne 's|^> ||p' |
+    while read FILE; do
+	rm $FILE
+    done
+}
+
+publish()
+{
+    local HASHPOOL=$PKGPOOL/.hashpool
+    local BRANCH=$1
+    local DATE=$(date +%y%W)
+    local RELEASEDIR=
+    local RELLINK=../.hashpool
+    local CURRENT
+    local i
+    local fullmeta
+    local MANIFESTDIR=$PKGPOOL/.manifest
+    local MANIFEST=$MANIFESTDIR/$(hostname).$(date +%s).$$
+
+    if test "$onlypublish" != 1; then
+	purgepool
+    fi
+
+    if test "$(id -un)" != "$releaseuser"; then
+	ssh -o NoHostAuthenticationForLocalhost=yes "$releaseuser"@localhost \
+	    "cd $base && $srcbase/$(basename $0) --pkgpool $PKGPOOL --releaseuser $releaseuser --publish-internal $BRANCH"
+	exit 0
+    fi
+
+    mkdir -p $MANIFESTDIR
+    > $MANIFEST.tmp
+    if test "$BRANCH" != .; then
+	for i in $(seq -w 00 99) x; do
+	    if ! test -d $PKGPOOL/${BRANCH}_$DATE$i; then
+		break
+	    fi
+	done
+	if test $i = x; then
+	    logerr No more than 100 releases allowed per week.
+	    exit 1
+	fi
+	CURRENT=${BRANCH}_$DATE$i
+	RELEASEDIR=$PKGPOOL/$CURRENT
+	mkdir -p $RELEASEDIR.tmp
+	echo $RELEASEDIR >> $MANIFEST.tmp
+    fi
+
+    for fullmeta in $pool/*.meta; do
+	local FORMAT=$(sed -ne 's|^format ||p' $fullmeta)
+	test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
+	local fullpkg=$(echo $fullmeta | sed -e 's|\.meta$||').$FORMAT
+	local hash=$(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3/\4/\1/\2|;q' $fullmeta)
+	local pkg=$(basename $fullpkg)
+	local meta=$(basename $fullmeta)
+	local have=0
+	mkdir -p $HASHPOOL/$hash
+	if ! test -r $HASHPOOL/$hash/$meta; then
+	    if test "$have" = 0; then
+		lognmsg $pkg
+		have=1
+	    fi
+	    echo -n ' [meta]'
+	    cp $fullmeta $HASHPOOL/$hash/$meta.tmp
+	    mv $HASHPOOL/$hash/$meta.tmp $HASHPOOL/$hash/$meta
+	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
+	fi
+	if ! test -r $HASHPOOL/$hash/$pkg; then
+	    if test "$have" = 0; then
+		lognmsg $pkg
+		have=1
+	    fi
+	    echo -n ' [pkg]'
+	    cp $fullpkg $HASHPOOL/$hash/$pkg.tmp
+	    mv $HASHPOOL/$hash/$pkg.tmp $HASHPOOL/$hash/$pkg
+	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
+	fi
+	if test "$RELEASEDIR"; then
+	    if test "$have" = 0; then
+		lognmsg $pkg
+		have=1
+	    fi
+	    echo -n ' [link]'
+	    ln -s $RELLINK/$hash/{$meta,$pkg} $RELEASEDIR.tmp/
+	    test -h $HASHPOOL/$hash/.needed.$CURRENT || ln -s ../../../../../$CURRENT $HASHPOOL/$hash/.needed.$CURRENT
+	fi
+	test "$have" = 0 || echo
+    done
+
+    local hash=$(echo $recipesum | sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\)$|_depmake/\1/\2|')
+    mkdir -p $HASHPOOL/$hash
+    if ! test -r $HASHPOOL/$hash/_depmake; then
+	logmsg 'dependency information'
+	cp $states/_depmake $HASHPOOL/$hash/_depmake.tmp
+	mv $HASHPOOL/$hash/_depmake.tmp $HASHPOOL/$hash/_depmake
+	echo $HASHPOOL/$hash >> $MANIFEST.tmp
+    fi
+
+    logmsg buildcache published
+    if test "$RELEASEDIR"; then
+	touch $RELEASEDIR.tmp/.backlinked
+	(
+	    cd $srcbase
+	    echo ${BRANCH}_$DATE$i
+	    git rev-parse HEAD
+	) > $RELEASEDIR.tmp/version
+	mv -T $RELEASEDIR.tmp $RELEASEDIR
+	rm -f $PKGPOOL/${BRANCH}_current
+	ln -s $CURRENT $PKGPOOL/${BRANCH}_current
+	echo $PKGPOOL/${BRANCH}_current >> $MANIFEST.tmp
+	logmsg release ${BRANCH}_$DATE$i complete
+    fi
+    sort -u $MANIFEST.tmp > $MANIFEST.sorted
+    rm $MANIFEST.tmp
+    mv $MANIFEST.sorted $MANIFEST.done
+}
+
+recipe=all
+target=all
+varset=0
+nodeps=0
+dirty=0
+force=0
+release=
+onlypublish=0
+buildinternal=0
+progress=100
+prepopulate=link
+prepopulatespec=0
+purgepool=0
+keepbuilds=
+purgebuilds=0
+verbose=
+whattodo=build
+
+if test -r "$base/.buildrc/pkgpool"; then
+    PKGPOOL=$(< "$base/.buildrc/pkgpool")
+elif test -r "$srcbase/.buildrc/pkgpool"; then
+    PKGPOOL=$(< "$srcbase/.buildrc/pkgpool")
+else
+    PKGPOOL=~/pkgpool
+fi
+if test -r "$base/.buildrc/releaseuser"; then
+    releaseuser=$(< "$base/.buildrc/releaseuser")
+elif test -r "$srcbase/.buildrc/releaseuser"; then
+    releaseuser=$(< "$srcbase/.buildrc/releaseuser")
+else
+    releaseuser="$(id -un)"
+fi
+
+while test $# -gt 0; do
+    case "$1" in
+	-j)
+	    parallel="-j$2"
+	    shift
+	    ;;
+	-j*)
+	    parallel="$1"
+	    ;;
+	--release)
+	    release="$2"
+	    shift
+	    ;;
+	--release=*)
+	    release="${1/--release=}"
+	    ;;
+	--writecache)
+	    release=.
+	    ;;
+	--publish-internal)
+	    onlypublish=1
+	    release="$2"
+	    shift
+	    ;;
+	--build-internal)
+	    nodeps=1
+	    buildinternal=1
+	    parallel=
+	    ;;
+	--progress)
+	    progress="$2"
+	    shift
+	    ;;
+	--progress=*)
+	    progress="${1/--progress=}"
+	    ;;
+	--prepopulate|--prepopulate=yes|--prepopulate=link)
+	    prepopulate=link
+	    prepopulatespec=1
+	    ;;
+	--no-prepopulate|--prepopulate=no)
+	    prepopulate=no
+	    prepopulatespec=1
+	    ;;
+	--prepopulate=copy)
+	    prepopulate=copy
+	    prepopulatespec=1
+	    ;;
+	--force)
+	    force=recipe
+	    ;;
+	--force-target)
+	    force=target
+	    ;;
+	--force-all)
+	    force=all
+	    ;;
+	--nodeps)
+	    nodeps=1
+	    ;;
+	--dirty)
+	    nodeps=1
+	    dirty=1
+	    ;;
+	--purgepool)
+	    purgepool=1
+	    ;;
+	--keepbuilds)
+	    keepbuilds=--keepbuilds
+	    ;;
+	--purgebuilds)
+	    purgebuilds=1
+	    ;;
+	--verbose)
+	    verbose=--verbose
+	    ;;
+	--resolve-ins)
+	    whattodo=resolve_ins
+	    ;;
+	--pkgpool)
+	    PKGPOOL="$2"
+	    shift
+	    ;;
+	--pkgpool=*)
+	    PKGPOOL="${1/--pkgpool=}"
+	    ;;
+	--releaseuser)
+	    releaseuser="$2"
+	    shift
+	    ;;
+	--releaseuser=*)
+	    releaseuser="${1/--releaseuser=}"
+	    ;;
+	--listrecipes)
+	    listpkgs
+	    exit 0
+	    ;;
+	--listtargets)
+	    listarchs
+	    exit 0
+	    ;;
+	--help)
+	    cat <<EOT
+Usage: build [options] [recipe] [target]
+Options:
+  -j [N]                      Allow N jobs at once.
+  --force                     Force rebuild of selected recipe, even when in
+                              clean state.
+  --force-target              Force rebuild of all recipes on selected target,
+                              even when in clean state.
+  --force-all                 Force rebuild of all recipes, even when in clean
+                              state.
+  --nodeps                    Rebuild mentioned recipe on target ignoring any
+                              dependencies.
+  --dirty                     Rebuild mentioned recipe on target including
+                              changes not yet committed.  This implies
+                              --nodeps.
+  --verbose                   Be verbose, even when there is no error.
+  --prepopulate=yes|no|copy|link   Pre-populate build results from the build
+                              cache using link mode (yes|link) or copy mode
+                              (copy).  If no is specified do not prepopulate.
+  --keepbuilds                Keep all build working directories after
+                              successfully completing the builds.
+  --purgebuilds               Purge all build working directories before
+                              starting the builds.
+  --purgepool                 Purge obsolete binaries before the builds.
+  --release [PREFIX]          Publish build results under PREFIX.
+  --writecache                Publish build results into build cache.
+  --pkgpool [DIR]             Directory of alternative package pool.
+  --releaseuser [USER]        User name of release user with elevated
+                              priviliges.
+  --listrecipes               List available recipes and exit.
+  --listtargets               List available targets and exit.
+  --help                      Print this message and exit.
+
+Report bugs to <$BUGMAIL>
+EOT
+	    exit 0
+	    ;;
+	-*)
+	    logerr "Unknown option $1.  Try --help."
+	    exit 1
+	    ;;
+	*)
+	    case $varset in
+		0)
+		    varset=1
+		    recipe="$1"
+		    ;;
+		1)
+		    varset=2
+		    target="$1"
+		    ;;
+		2)
+		    logerr 'Too many parameters.'
+		    exit 1
+		    ;;
+	    esac
+	    ;;
+    esac
+    shift
+done
+
+if test "$release" -a "$dirty" = 1; then
+    logerr Specifying --dirty together with --release or --writecache is not allowed.
+    exit 1
+fi
+
+case "$PKGPOOL" in
+    /*) ;;
+    *) PKGPOOL="$PWD/$PKGPOOL" ;;
+esac
+
+if test -x build && test "$(stat -c '%m/%i' build)" = "$(stat -c '%m/%i' $0)"; then
+    outofplace=0
+else
+    outofplace=1
+    if test ! -r .buildmark; then
+	if test $(find . | head -n 2 | wc -l) != 1; then
+	    logerr Only use on top level of existing build directory or empty one.
+	    exit 1
+	fi
+    fi
+fi
+
+mkdir -p "$states"
+if test $prepopulatespec = 0 -a -r $states/_prepopulate; then
+    prepopulate=$(cat $states/_prepopulate)
+else
+    echo "$prepopulate" > $states/_prepopulate
+fi
+
+test "$prepopulate" = link && prepopulatebin="ln -s" || prepopulatebin="cp"
+
+recipesum=$( (ls $recipes | LC_ALL=C sort -u && cat $(ls $recipes/* | LC_ALL=C sort -u)) | sha1sum | sed -e 's| .*||')
+
+if test "$onlypublish" = 1; then
+    publish "$release"
+    exit 0
+fi
+
+if test $outofplace = 1 -a $buildinternal != 1; then
+    touch .buildmark
+    for tool in build repo; do
+	if test ! -x $tool; then
+	    rm -f $tool
+	    cat <<EOT > $tool
+#!/bin/bash
+exec $(dirname $0)/$tool "\$@"
+EOT
+	    chmod 755 $tool
+	fi
+    done
+    for tool in recipes src; do
+	if test ! -d $tool; then
+	    rm -f $tool
+	    ln -s $(dirname $0)/$tool $tool
+	fi
+    done
+fi
+
+
+test "$purgebuilds" = 1 && purgebuilds || true
+
+if test "$whattodo" = resolve_ins; then
+    mkdir -p $tmp
+    file=$(getrecipe $recipe $target)
+    if test "$file" = ""; then
+        logerr "Nothing known about $recipe on $target."
+        exit 1
+    fi
+    resolve_ins < $file
+    forcerm $tmp
+    exit 0
+fi
+
+case "$force" in
+    recipe) forcerm "$states/$target/$recipe";;
+    target) forcerm "$states/$target";;
+    all)    forcerm "$states";;
+esac
+
+if test $nodeps = 1; then
+    if test $dirty = 1; then
+	forcerm "$states/$target/$recipe"
+    fi
+    invoke "$recipe" "$target"
+else
+    makefilesum=$(sed -ne 's|^##RECIPESUM## ||p' "$states/_depmake" 2>/dev/null || true)
+    if test "$recipesum" != "$makefilesum"; then
+	pkghash=$(echo $recipesum | sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\)$|_depmake/\1/\2|')
+	rm -f "$states/_depmake"
+	if test "$prepopulate" != no -a -r "$PKGPOOL/.hashpool/$pkghash/_depmake"; then
+	    logmsg Retrieving dependencies
+	    mkdir -p $states
+	    $prepopulatebin "$PKGPOOL/.hashpool/$pkghash/_depmake" "$states/"
+	else
+	    logmsg Calculating dependencies
+	    rm -f $states/*/*/depchk
+	    calcdeps > "$states/_depmake"
+	    echo "##RECIPESUM## $recipesum" >> "$states/_depmake"
+	    rm -f $states/*/*/depchk
+	fi
+    fi
+    for pkgiter in $(sed -ne 's|^_PKG/\(.*\): .*$|\1|p' states/_depmake |
+		     sort | uniq -d); do
+	logerr "WARNING: $pkgiter is generated by multiple recipes and targets:"
+	sed -ne "s|^_PKG/\($pkgiter\): \(.*\)/\(.*\)|WARNING:         \3 \2|p" states/_depmake |
+	while read line; do
+	    logerr "$line"
+	done
+    done
+    test "$purgepool" = 1 && purgepool || true
+    make $parallel -f "$states/_depmake" --no-print-directory \
+	BUILD="$0 --prepopulate=$prepopulate $keepbuilds $verbose --pkgpool=$PKGPOOL" "$target/$recipe"
+fi
+
+test "$release" && publish "$release" || true
+
+if test $buildinternal != 1; then
+    logmsg done.
+fi
