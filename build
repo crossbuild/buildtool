@@ -60,11 +60,22 @@ forcerm()
 genhash()
 {
     local FILE
+    local HEAD
     for FILE in "$@"; do
+	FILE=${FILE//\\\[/\[}
+	FILE=${FILE//\\\]/\]}
 	FILE=${FILE/<SOURCE>/$src}
 	FILE=${FILE/<RECIPE>/$recipes}
 	FILE=${FILE/<STATE>/$states}
 	FILE=${FILE/<POOL>/$pool}
+	case "$FILE" in
+	    *\[*\])
+		HEAD=${FILE/*\[}
+		HEAD=${HEAD/\]}
+		echo "$HEAD $FILE"
+		continue
+		;;
+	esac
         if test -f $FILE; then
             sha1sum $FILE
 	elif test -d "$FILE" -a "$dirty" = 1; then
@@ -100,10 +111,11 @@ genhash()
 srcvers()
 {
     local FILE="$1"
+    local HEAD="$2"
     if test -e $FILE/.git; then
 	(
 	    cd $FILE
-	    git describe --always --tags --match '_release/*' | sed -e 's|^_release/||'
+	    git describe --always --tags --match '_release/*' "$HEAD" | sed -e 's|^_release/||'
 	)
     elif test -f $FILE/.gitversion; then
 	cat $FILE/.gitversion
@@ -473,13 +485,26 @@ getrecipe()
 srcinstaller()
 {
     local SRC
+    local DIR
     local PTH
     local srcdst
+    local HEAD
     rm -f "$blddir/.meta"
     touch "$blddir/.meta"
     awk '/^#\|src /{ print $2" "$3 }' |
     while read SRC PTH; do
 	logmsg installing sources $SRC $PTH
+	case "$SRC" in
+	    *\[*\])
+		HEAD=${SRC/*\[}
+		HEAD=${HEAD/\]}
+		DIR=${SRC/\[*\]}
+		;;
+	    *)
+		HEAD=HEAD
+		DIR=$SRC
+		;;
+	esac
 	case "$PTH" in
 	    //none) continue;;
 	    /*) srcdst="$srcdir$PTH";;
@@ -488,22 +513,23 @@ srcinstaller()
 	mkdir -p "$srcdst"
 	(
 	    flock -x 200
-	    if ! test "$(ls -A $src/$SRC)"; then
+	    if ! test "$(ls -A $src/$DIR)"; then
 		cd $srcbase
-		git submodule update src/$SRC
+		git submodule update src/$DIR
 	    fi
-	) 200>"$states/_lock/src/$SRC"
+	) 200>"$states/_lock/src/$DIR"
 	(
 	    flock -s 200
-	    cd $src/$SRC
-	    if test -e .git -a "$dirty" != 1; then
-		git archive --format=tar HEAD
+	    cd $src/$DIR
+	    if test -e .git -a \( "$dirty" != 1 -o "$HEAD" != HEAD \); then
+		git archive --format=tar "$HEAD"
 	    else
 		tar -c --exclude=./.git .
 	    fi
-	) 200>"$states/_lock/src/$SRC" |
+	) 200>"$states/_lock/src/$DIR" |
 	tar -C "$srcdst" -x -k
-	echo src $(genhash $src/$SRC)-$(srcvers $src/$SRC) | sed -e 's|<SOURCE>/||' >> "$blddir/.meta"
+	echo src $(genhash $src/$SRC)-$(srcvers $src/$DIR "$HEAD") |
+	sed -e 's|<SOURCE>/||;s|\[.*\]||' >> "$blddir/.meta"
     done
 }
 
@@ -647,7 +673,7 @@ invoke()
 	    sed -e "s|^\([^ ]*\).*|$pool/\1.meta|") $(awk '
             /^#\|src /{ print "'"$src"'/"$2 } ' $usedrecipes)"
 	forcerm $tmp
-	genhash $hashes > "$states/$target/$recipe/hash"
+	genhash ${hashes//\[/\\\[} > "$states/$target/$recipe/hash"
 	local pkghash=$(sha1sum "$states/$target/$recipe/hash" | sed -e "s|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) .*|$target/$recipe/\1/\2|")
 	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
 	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
