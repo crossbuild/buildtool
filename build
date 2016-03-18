@@ -396,17 +396,21 @@ resolve_ins()
 
     while true; do
 	cp $tmp/metatmp $tmp/metaold
-	while read PKG RELOC; do
-	    echo $PKG $RELOC
-	    sed -ne 's|^dep ||p' $pool/$PKG.meta |
-	    while read PKG2 RELOC2; do
-		echo $PKG2 $RELOC$RELOC2
-	    done
-	done < $tmp/metaold | LC_ALL=C sort -u > $tmp/metatmp
+	diff <(
+	    while read PKG RELOC; do
+		echo $PKG $RELOC
+		sed -ne 's|^dep ||p' $pool/$PKG.meta |
+		while read PKG2 RELOC2; do
+		    echo $PKG2 $RELOC$RELOC2
+		done
+	    done < $tmp/metaold | LC_ALL=C sort -u
+	) <(
+	    LC_ALL=C sort -u $tmp/metablk
+	) | sed -ne 's|< ||p' > $tmp/metatmp
 	diff $tmp/metaold $tmp/metatmp >/dev/null 2>/dev/null && break
     done
 
-    diff $tmp/metatmp <(LC_ALL=C sort -u $tmp/metablk) | sed -ne 's|< ||p'
+    cat $tmp/metatmp
 
     rm $tmp/metatmp $tmp/metaold $tmp/metablk
 }
