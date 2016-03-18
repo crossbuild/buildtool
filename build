@@ -144,6 +144,7 @@ newpkg()
     PKGLIST[${#PKGLIST[@]}]="$tmp/list.$PKG"
     RELOCS[${#RELOCS[@]}]="$RELOC"
     AUTO[${#AUTO[@]}]=
+    NOHASH[${#NOHASH[@]}]=0
     FORMAT[${#FORMAT[@]}]="$DEFAULTFORMAT"
     rm -f $tmp/list.$PKG $pool/$PKG.newmeta
     touch $tmp/list.$PKG $pool/$PKG.newmeta
@@ -253,6 +254,7 @@ package()
     local RELOCS=()
     local PKGLIST=()
     local AUTO=()
+    local NOHASH=()
     local FORMAT=()
     newpkg full ''
     makelist '' '' 0
@@ -260,6 +262,7 @@ package()
     RELOCS=()
     PKGLIST=()
     AUTO=()
+    NOHASH=()
     FORMAT=()
     while read T1 T2 FILE RELOCINP; do
 	if test "$T1" = '#|pkg'; then
@@ -284,6 +287,9 @@ package()
 		    ;;
 		auto)
 		    AUTO[${#AUTO[@]}-1]="$(eval "echo $FILE")"
+		    ;;
+		nohash)
+		    NOHASH[${#NOHASH[@]}-1]=1
 		    ;;
 		format)
 		    FORMAT[${#FORMAT[@]}-1]="$(eval "echo $FILE")"
@@ -327,8 +333,12 @@ package()
 		esac
 	    done < ${PKGLIST[NUM]} | sort -u >> $pool/${PKGS[NUM]}.newmeta
 	    rm -f "$pool/${PKGS[NUM]}.${FORMAT[NUM]}"
-	    echo payload $(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]} |
-		    hashfilelist $destdir${RELOCS[NUM]}) >> $pool/${PKGS[NUM]}.newmeta
+	    if test "${NOHASH[NUM]}" = 1; then
+		echo nohash $(date +%s.%N | sha1sum | awk '{print $1}')
+	    else
+		echo payload $(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]} |
+			hashfilelist $destdir${RELOCS[NUM]})
+	    fi >> $pool/${PKGS[NUM]}.newmeta
 	    case "${FORMAT[NUM]}" in
 		tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz)
 		    tar -c -C $destdir${RELOCS[NUM]} --no-recursion --owner=0 --group=0 -T <(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]})
