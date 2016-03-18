@@ -402,6 +402,9 @@ resolve_ins()
 	if test "$T1" = '#|blk'; then
 	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metablk
 	fi
+	if test "$T1" = '#|blkbase'; then
+	    sed -ne "s|^[0-9a-f]* <POOL>/\(.*\)\.meta\$|\1 $RELOC|p" $states/$target/$PKG/done >> $tmp/metablk
+	fi
     done
 
     while true; do
@@ -636,6 +639,9 @@ EOT
 		    echo ".PHONY: $PKG"
 		    echo "$target/$recipe: $PKG"
 		    echo "$PKG:"
+		done
+		grep '^#|blkbase ' $file | while read A B C; do
+		    echo $target/$recipe: $target/$B
 		done
 		grep '^#|pkg name ' $file | while read A B C D; do
 		    if test "$C" != nopackage; then
@@ -1123,7 +1129,7 @@ fi
 
 test "$prepopulate" = link && prepopulatebin="ln -s" || prepopulatebin="cp"
 
-recipesum=$( (echo 1 && ls $recipes | LC_ALL=C sort -u && cat $(ls $recipes/* | LC_ALL=C sort -u)) | sha1sum | sed -e 's| .*||')
+recipesum=$( (echo 2 && ls $recipes | LC_ALL=C sort -u && cat $(ls $recipes/* | LC_ALL=C sort -u)) | sha1sum | sed -e 's| .*||')
 
 if test "$onlypublish" = 1; then
     publish "$release"
