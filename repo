@@ -73,12 +73,10 @@ pull()
 	for PRJ in "${SUB_MOD[@]}"; do
 	    if (
 		cd src/$PRJ
-		git log --decorate |
-		head -n 1 |
+		git log --pretty=format:%d -1 |
 		grep -q _persistent/ ||
 		git fetch
-		git log --decorate |
-		head -n 1 |
+		git log --pretty=format:%d -1 |
 		grep -q _persistent/
 	    ); then
 		#echo "refreshing checked out $PRJ..."
