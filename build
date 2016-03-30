@@ -392,6 +392,7 @@ resolve_ins()
     local RELOC
     local PKG2
     local RELOC2
+    local noblock=$1
 
     > $tmp/metatmp
     > $tmp/metablk
@@ -399,10 +400,10 @@ resolve_ins()
 	if test "$T1" = '#|ins'; then
 	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metatmp
 	fi
-	if test "$T1" = '#|blk'; then
+	if test $noblock != 1 -a "$T1" = '#|blk'; then
 	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metablk
 	fi
-	if test "$T1" = '#|blkbase'; then
+	if test $noblock != 1 -a "$T1" = '#|blkbase'; then
 	    sed -ne "s|^[0-9a-f]* <POOL>/\(.*\)\.meta\$|\1 $RELOC|p" $states/$target/$PKG/done >> $tmp/metablk
 	fi
     done
@@ -436,7 +437,7 @@ installer()
 
     forcerm $srcdir
     mkdir -p $srcdir/.meta
-    resolve_ins | 
+    resolve_ins 0 |
     while read PKG RELOC; do
 	logmsg installing $PKG $RELOC
 	mkdir -p $srcdir$RELOC
@@ -700,7 +701,7 @@ invoke()
 	local tmp=$obj/$target/$recipe/tmp
 	mkdir -p $tmp
         hashes="$(for h in $usedrecipes $recipes/settings_$target $recipes/${recipe}_$target; do
-		echo $h; done | sort -u) $(resolve_ins < $file |
+		echo $h; done | sort -u) $(resolve_ins 1 < $file |
 	    sed -e "s|^\([^ ]*\).*|$pool/\1.meta|") $(awk '
             /^#\|src /{ print "'"$src"'/"$2 } ' $usedrecipes)"
 	forcerm $tmp
@@ -1166,7 +1167,7 @@ if test "$whattodo" = resolve_ins; then
         logerr "Nothing known about $recipe on $target."
         exit 1
     fi
-    resolve_ins < $file
+    resolve_ins 0 < $file
     forcerm $tmp
     exit 0
 fi
