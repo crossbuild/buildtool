@@ -400,11 +400,13 @@ resolve_ins()
 	if test "$T1" = '#|ins'; then
 	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metatmp
 	fi
-	if test $noblock != 1 -a "$T1" = '#|blk'; then
-	    echo "$(eval "echo $PKG $RELOC")" >> $tmp/metablk
-	fi
-	if test $noblock != 1 -a "$T1" = '#|blkbase'; then
-	    sed -ne "s|^[0-9a-f]* <POOL>/\(.*\)\.meta\$|\1 $RELOC|p" $states/$target/$PKG/done >> $tmp/metablk
+	if test "$noblock" != 1; then
+	    if test "$T1" = '#|blk'; then
+		echo "$(eval "echo $PKG $RELOC")" >> $tmp/metablk
+	    fi
+	    if test "$T1" = '#|blkbase'; then
+		sed -ne "s|^[0-9a-f]* <POOL>/\(.*\)\.meta\$|\1 $RELOC|p" $states/$target/$PKG/done >> $tmp/metablk
+	    fi
 	fi
     done
 
