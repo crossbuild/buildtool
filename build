@@ -570,6 +570,7 @@ EOT
 logger()
 {
     local logfile="$1"
+    rm -f "$logfile"
     if test "$verbose"; then
 	tee >(gzip -c9 > "$logfile")
     else
@@ -718,6 +719,10 @@ invoke()
 		    $prepopulatebin "$i" "$pool/"
 		fi
 	    done
+	    if test -r $PKGPOOL/.hashpool/$pkghash/.log.gz; then
+		rm -f "$log/$target-$recipe.log.gz"
+		$prepopulatebin $PKGPOOL/.hashpool/$pkghash/.log.gz "$log/$target-$recipe.log.gz"
+	    fi
 	    mv "$states/$target/$recipe/hash" "$states/$target/$recipe/done"
 	else
 	    logmsg "$(printf '[%3u%%]' $progress) Building $target/$recipe"
@@ -841,6 +846,7 @@ publish()
 	test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
 	local fullpkg=$(echo $fullmeta | sed -e 's|\.meta$||').$FORMAT
 	local hash=$(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3/\4/\1/\2|;q' $fullmeta)
+	local logname=$(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3-\4|;q' $fullmeta)
 	local pkg=$(basename $fullpkg)
 	local meta=$(basename $fullmeta)
 	local have=0
@@ -863,6 +869,16 @@ publish()
 	    echo -n ' [pkg]'
 	    cp $fullpkg $HASHPOOL/$hash/$pkg.tmp
 	    mv $HASHPOOL/$hash/$pkg.tmp $HASHPOOL/$hash/$pkg
+	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
+	fi
+	if test -r $log/$logname.log.gz && ! test -r $HASHPOOL/$hash/.log.gz; then
+	    if test "$have" = 0; then
+		lognmsg $pkg
+		have=1
+	    fi
+	    echo -n ' [log]'
+	    cp $log/$logname.log.gz $HASHPOOL/$hash/.log.gz.tmp
+	    mv $HASHPOOL/$hash/.log.gz.tmp $HASHPOOL/$hash/.log.gz
 	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
 	fi
 	if test "$RELEASEDIR"; then
