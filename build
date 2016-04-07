@@ -712,7 +712,7 @@ invoke()
 	local pkghash=$(sha1sum "$states/$target/$recipe/hash" | sed -e "s|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) .*|$target/$recipe/\1/\2|")
 	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
 	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
-	    mkdir -p $pool
+	    mkdir -p $pool "$log"
 	    for i in $PKGPOOL/.hashpool/$pkghash/*; do
 		if test -r "$i"; then
 		    rm -f "$pool/$(basename $i)"
