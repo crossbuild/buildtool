@@ -396,6 +396,20 @@ package()
     logmsg Packaging successfully completed.
 }
 
+resolve_ins_getdeps()
+{
+		case "$PKG" in
+		    \[*\])
+			;;
+		    *)
+			sed -ne 's|^dep ||p' $pool/$PKG.meta |
+			while read PKG2 RELOC2; do
+			    echo $PKG2 $RELOC$RELOC2
+			done
+			;;
+		esac
+}
+
 resolve_ins()
 {
     local T1
@@ -425,11 +439,8 @@ resolve_ins()
 	cp $tmp/metatmp $tmp/metaold
 	diff <(
 	    while read PKG RELOC; do
-		echo $PKG $RELOC
-		sed -ne 's|^dep ||p' $pool/$PKG.meta |
-		while read PKG2 RELOC2; do
-		    echo $PKG2 $RELOC$RELOC2
-		done
+		echo "$PKG" $RELOC
+		resolve_ins_getdeps
 	    done < $tmp/metaold | LC_ALL=C sort -u
 	) <(
 	    LC_ALL=C sort -u $tmp/metablk
@@ -437,7 +448,11 @@ resolve_ins()
 	diff $tmp/metaold $tmp/metatmp >/dev/null 2>/dev/null && break
     done
 
-    cat $tmp/metatmp
+    if test "$noblock" = 1; then
+	sed -e 's|^\[\([^]]*\)\]|\1|' $tmp/metatmp
+    else
+	cat $tmp/metatmp
+    fi
 
     rm $tmp/metatmp $tmp/metaold $tmp/metablk
 }
@@ -453,48 +468,67 @@ installer()
     resolve_ins 0 |
     while read PKG RELOC; do
 	logmsg installing $PKG $RELOC
-	mkdir -p $srcdir$RELOC
-	FORMAT=$(sed -ne 's|^format ||p' $pool/$PKG.meta)
-	test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
-	cp $pool/$PKG.meta $srcdir/.meta
-	cat $pool/$PKG.$FORMAT |
-	case "$FORMAT" in
-	    tar|cpio)
-		cat
-		;;
-	    *.gz|tgz)
-		gzip -cd
-		;;
-	    *.bz2|tbz|tbz2|tb2)
-		bzip2 -cd
-		;;
-	    *.Z|taz)
-		compress -cd
-		;;
-	    *.lz|*.lzma|tlz)
-		lzma -cd
-		;;
-	    *.xz|txz)
-		xz -cd
+	case "$PKG" in
+	    \[*\])
+		PKG=$(echo "$PKG" | sed -e 's|^\[\([^]]*\)\]|\1|')
+		FORMAT=$(sed -ne 's|^format ||p' $pool/$PKG.meta)
+		test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
+		cp $pool/$PKG.meta $srcdir/.meta
+		case "$RELOC" in
+		    /*) RELOC="$srcdir$RELOC";;
+		    *) RELOC="$blddir/$RELOC";;
+		esac
+		case "$RELOC" in
+		    */) RELOC="$RELOC$PKG.$FORMAT";;
+		esac
+		mkdir -p $(dirname $RELOC)
+		cp $pool/$PKG.$FORMAT $RELOC
 		;;
 	    *)
-		logerr "Unsupported file format: $FORMAT"
-		exit 1
-		;;
-	esac |
-	case "$FORMAT" in
-	    tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz)
-		tar -C $srcdir$RELOC -x -k -p
-		;;
-	    cpio|cpio.*)
-		(
-		    cd $srcdir$RELOC
-		    cpio -imd --quiet
-		)
-		;;
-	    *)
-		logerr "Unsupported file format: $FORMAT"
-		exit 1
+		FORMAT=$(sed -ne 's|^format ||p' $pool/$PKG.meta)
+		test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
+		cp $pool/$PKG.meta $srcdir/.meta
+		mkdir -p $srcdir$RELOC
+		cat $pool/$PKG.$FORMAT |
+		case "$FORMAT" in
+		    tar|cpio)
+			cat
+			;;
+		    *.gz|tgz)
+			gzip -cd
+			;;
+		    *.bz2|tbz|tbz2|tb2)
+			bzip2 -cd
+			;;
+		    *.Z|taz)
+			compress -cd
+			;;
+		    *.lz|*.lzma|tlz)
+			lzma -cd
+			;;
+		    *.xz|txz)
+			xz -cd
+			;;
+		    *)
+			logerr "Unsupported file format: $FORMAT"
+			exit 1
+			;;
+		esac |
+		case "$FORMAT" in
+		    tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz)
+			tar -C $srcdir$RELOC -x -k -p
+			;;
+		    cpio|cpio.*)
+			(
+			    cd $srcdir$RELOC
+			    cpio -imd --quiet
+			)
+			;;
+		    *)
+			logerr "Unsupported file format: $FORMAT"
+			exit 1
+			;;
+		esac
 		;;
 	esac
     done
