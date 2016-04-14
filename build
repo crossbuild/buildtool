@@ -333,14 +333,14 @@ package()
 		esac
 	    done < ${PKGLIST[NUM]} | sort -u >> $pool/${PKGS[NUM]}.newmeta
 	    rm -f "$pool/${PKGS[NUM]}.${FORMAT[NUM]}"
-	    if test "${NOHASH[NUM]}" = 1; then
+	    if test "${NOHASH[NUM]}" = 1 || test "${FORMAT[NUM]}" = plain; then
 		echo nohash $(date +%s.%N | sha1sum | awk '{print $1}')
 	    else
 		echo payload $(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]} |
 			hashfilelist $destdir${RELOCS[NUM]})
 	    fi >> $pool/${PKGS[NUM]}.newmeta
 	    case "${FORMAT[NUM]}" in
-		tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz)
+		tar|tar.*|tgz|tbz|tbz2|tb2|taz|tlz|txz|plain)
 		    tar -c -C $destdir${RELOCS[NUM]} --no-recursion --owner=0 --group=0 -T <(sed -e 's|^'"${RELOCS[NUM]}"'/||' ${PKGLIST[NUM]})
 		    ;;
 		cpio|cpio.*)
@@ -356,7 +356,7 @@ package()
 		    ;;
 	    esac |
 	    case "${FORMAT[NUM]}" in
-		tar|cpio)
+		tar|cpio|plain)
 		    cat
 		    ;;
 		*.gz|tgz)
@@ -378,8 +378,19 @@ package()
 		    logerr "Unsupported file format: ${FORMAT[NUM]}"
 		    exit 1
 		    ;;
-	    esac > "$pool/${PKGS[NUM]}.${FORMAT[NUM]}"
-	    mv $pool/${PKGS[NUM]}.newmeta $pool/${PKGS[NUM]}.meta
+	    esac |
+	    case "${FORMAT[NUM]}" in
+		plain)
+		    rm -rf $base/plain/${PKGS[NUM]}
+		    mkdir -p $base/plain/${PKGS[NUM]}
+		    tar -C $base/plain/${PKGS[NUM]} -x -k -p
+		    rm $pool/${PKGS[NUM]}.newmeta
+		    ;;
+		*)
+		    cat > "$pool/${PKGS[NUM]}.${FORMAT[NUM]}"
+		    mv $pool/${PKGS[NUM]}.newmeta $pool/${PKGS[NUM]}.meta
+		    ;;
+	    esac
 	fi
     done
     logmsg Packaging successfully completed.
