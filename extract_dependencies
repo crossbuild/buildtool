@@ -1,0 +1,128 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+my $recipe=shift(@ARGV);
+
+my %PHONY=();
+my %TARGETS=();
+my %DEPS=();
+my %BUILDS=();
+my $TARGET=undef;
+
+my $UNRECOGNIZED="";
+my $RECIPESUM="";
+
+my %RECIPES=();
+
+while (<>) {
+    chomp;
+
+    # .PHONY: target
+    if (/^\.PHONY:\s*(\S+)\s*$/) {
+        $PHONY{$1}=1;
+        next;
+    }
+
+    # target/recipe: dependencies
+    if (m,^([\w\d\-\+]+)/(\S+):\s*(.*),)
+    {   my ($target,$recipe,$dep)=($1,$2,$3);
+
+        $TARGET="$target/$recipe";
+        $TARGETS{"$TARGET"}=1;
+        $TARGET="$TARGET";
+        $RECIPES{$recipe} -> {$target}=1 unless $target eq "_PKG";
+
+        if ($dep eq "") {
+            push @{$DEPS{"$TARGET"}},$dep;
+        } else {
+            unshift @{$DEPS{"$TARGET"}},$dep;
+        }
+        next;
+    }
+
+    # add build to targets
+    if (/^(\s*\@\+\$\(BUILD\).*)/) {
+        push @{$BUILDS{$TARGET}},$1;
+        next;
+    }
+
+    if (/^\#\#RECIPESUM\#\#/) {
+        $RECIPESUM=$_;
+        next;
+    }
+
+    # all unrecogized lines
+    $UNRECOGNIZED .= "$_\n";
+}
+
+my @printalso=();
+my %printed=();
+
+sub _printtarget
+{   my $target=shift;
+
+    return if defined($printed{$target});
+    $printed{$target}=1;
+
+    if (defined($PHONY{$target})) {
+        print ".PHONY: $target\n";
+    }
+    my $deps=$DEPS{$target};
+    my $lastline="";
+    for my $dep (@$deps) {
+        my $line = "$target:";
+        $line .= " $dep" if $dep ne "";
+        print "$line\n" unless $line eq $lastline;
+        $lastline=$line;
+
+        if ($dep ne "") {
+            $dep =~ s/\s.*//; #only first
+            push @printalso, $dep;
+        }
+    }
+    my $build=$BUILDS{$target};
+    map { print "$_\n"; } @$build if defined $build;
+    $BUILDS{$target}=undef;
+}
+
+sub printtargets
+{   my @targets=@_;
+    @printalso=();
+    %printed=();
+
+    push @printalso,@targets;
+    while ($#printalso >= 0) {
+        my $target=shift(@printalso);
+        _printtarget($target);
+    }
+}
+
+print "$UNRECOGNIZED";
+printtargets(map { "$_/$recipe"; } keys %{$RECIPES{"$recipe"}});
+
+print "$RECIPESUM\n";
+
+=pod
+
+=head NAME
+
+extract_dependencies
+
+=head SYNOPSIS
+
+extract_dependencies $recipe _depmake >_depmake_"$recipe"
+make -f "_depmake_$recipe" ...
+
+=head DESCRIPTION
+
+Extracts dependencies belonging to a given recipe from the _depmake Makefile.
+Recursively all relevant rules are extracted. The original _depmake has several megabytes (12MB)
+which take several minutes (2min 53 seconds) to load in make.
+
+extract_depencency needs only about 1 second and the result can be loaded almost immediately.
+
+=head AUTHOR
+
+Reiner Huober 4/2016

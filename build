@@ -36,6 +36,7 @@ BUGMAIL='rschiele@gmail.com'
 DEFAULTFORMAT="tar.gz"
 
 parallel=-j$(nproc)
+haveperl=$(perl -e 'print "1"' 2>/dev/null)
 
 logmsg()
 {
@@ -649,8 +650,123 @@ listpkgs()
     done | sort -u
 }
 
-calcdeps()
+calcdeps_perl()
 {
+    local ARCHS=$(listarchs)
+    local PKGS=$(listpkgs)
+    local target
+    local recipe
+    cat <<'EOT'
+ifneq ($(BUILD),echo)
+T := $(shell $(MAKE) $(MAKECMDGOALS) --no-print-directory \
+	-rRf $(firstword $(MAKEFILE_LIST)) \
+	BUILD=echo PROGRESS=X | wc -l)
+N := x
+C = $(words $N)$(eval N := x $N)
+PROGRESS = `expr $C '*' 100 / $T`
+endif
+EOT
+    export recipe
+    export target
+    rm -rf states/.file[0-9]*
+    N=1
+    WAIT=0
+    for recipe in $PKGS; do
+        N=$(expr $N + 1)
+        WAIT=$(expr $WAIT + 1)
+        NF=states/.file"$(printf %05d $N)"
+	{
+	    perl -we '
+		use strict;
+
+		my $recipe='\'"$recipe"\'';
+		my $recipes='\'"$recipes"\'';
+		my @ARCHS=qw('"$ARCHS"');
+		for my $target (@ARCHS) {
+
+		    print << "EOT" ;
+.PHONY: $target/$recipe
+$target/$recipe:
+	\@\+\$(BUILD) --progress="\$(PROGRESS)" --build-internal $recipe $target
+EOT
+		    my $file="$recipes/${recipe}_${target}";
+		    $file = "$recipes/${recipe}" unless -f $file;
+		    if (-f "$file") {
+
+			my $dep="";
+			my $ins="";
+			my $bas="";
+			my $nam="";
+			my $pkd="";
+
+			my $pkgname=undef;
+			open(my $fd,$file) or die "$file: $!, stopped";
+			while (<$fd>) {
+			    if (/^\#\|dep\s+(\S+)\s*(\S*)/) {
+				my ($pkg,$tgt)=($1,$2);
+				$tgt = $target if $tgt eq "";
+				if ($pkg ne "auto") {
+				    $dep .= "$target/$recipe: $tgt/$pkg\n";
+				}
+			    } elsif (/^\#\|ins\s+(\S+)/) {
+				#my $pkg="_PKG/" . `echo $1`;
+				my $pkg="_PKG/$1";
+				$pkg =~ s/\$target/$target/g;
+				$pkg =~ s/\$\{target\}/$target/g;
+				chomp($pkg);
+				$ins .= ".PHONY: $pkg\n";
+				$ins .= "$target/$recipe: $pkg\n";
+				$ins .= "$pkg:\n";
+			    } elsif (/^\#\|blkbase\s+(\S+)/) {
+				$bas .= "$target/$recipe: $target/$1\n";
+			    } elsif (/^\#\|pkg name\s+(\S+)/) {
+				if ($1 ne "nopackage") {
+				    #$pkgname="_PKG/" . `echo $1`;
+				    $pkgname="_PKG/$1";
+				    $pkgname =~ s/\$target/$target/g;
+				    $pkgname =~ s/\$\{target\}/$target/g;
+				    chomp($pkgname);
+				    $nam .= ".PHONY: $pkgname\n";
+				    $nam .= "$pkgname: $target/$recipe #GEN\n";
+				} else {
+				    $pkgname="_PKG/nopackage";
+				    $pkgname =~ s/\$target/$target/g;
+				    $pkgname =~ s/\$\{target\}/$target/g;
+				}
+			    } elsif (/^\#\|pkg dep\s+(\S+)/) {
+				#my $pkgd="_PKG/" . `echo $1`;
+				my $pkgd="_PKG/$1";
+				$pkgd =~ s/\$target/$target/g;
+				$pkgd =~ s/\$\{target\}/$target/g;
+				chomp($pkgd);
+				$pkd .= ".PHONY: $pkgd\n";
+				$pkd .= "$pkgname: $pkgd\n";
+				$pkd .= "$pkgd:\n";
+			    }
+			} # while
+			close $fd;
+			print "$dep$ins$bas$nam$pkd";
+		    } # if
+		} # for
+	    '
+        } >$NF &
+	if test $WAIT -ge $(nproc); then
+	    wait
+	    WAIT=0
+	    cat states/.file[0-9]*
+	    rm -rf states/.file[0-9]*
+	fi
+    done
+    if test $WAIT -gt 0; then
+	wait
+	WAIT=0
+	cat states/.file[0-9]*
+	rm -rf states/.file[0-9]*
+    fi
+}
+
+calcdeps_bash()
+{   
     local ARCHS=$(listarchs)
     local target
     local recipe
@@ -710,6 +826,15 @@ EOT
 	    fi
 	done
     done
+}
+
+calcdeps()
+{
+    if test "$haveperl"; then
+	calcdeps_perl
+    else
+	calcdeps_bash
+    fi
 }
 
 invoke()
@@ -1272,8 +1397,14 @@ else
 	done
     done
     test "$purgepool" = 1 && purgepool || true
-    make $parallel -f "$states/_depmake" --no-print-directory \
+    if test "$haveperl"; then
+	"$src/buildtool/extract_dependencies" "$recipe" "$states/_depmake"
+    else
+	cat "$states/_depmake"
+    fi > "$states/_depmake_tmp"
+    make $parallel -f "$states/_depmake_tmp" --no-print-directory \
 	BUILD="$0 --prepopulate=$prepopulate $keepbuilds $verbose --pkgpool=$PKGPOOL" "$target/$recipe"
+    rm "$states/_depmake_tmp"
 fi
 
 test "$release" && publish "$release" || true
