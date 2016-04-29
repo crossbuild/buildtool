@@ -184,7 +184,7 @@ EOT
 	cd ../..
     done
     git commit -t .tmp.alllogs $ALLDIRS
-    if ! git push; then
+    if ! git push origin HEAD; then
 	cat <<EOT
 It seems the push failed. :(
 
