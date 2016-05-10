@@ -301,6 +301,10 @@ diff()
 	    "$MODEB" = "160000" -a \
 	    "$MODTYPE" = "M"; then
 	    (
+        if test !  "$(ls -A $MODULE )"; then # check if submodul empty -> fetch submodule
+            echo "fetching $MODULE for diff"
+            fetch $MODULE;
+        fi
 		cd $MODULE
 		test "$HASHB" != 0000000... || HASHB=
 		git --no-pager diff --src-prefix=$MODULE/ --dst-prefix=$MODULE/ ${HASHA/...} ${HASHB/...}
