@@ -275,6 +275,9 @@ fetch()
 
 switch()
 {
+    if test $# == 0; then       # without parameters print actual branch
+        git branch -v
+    fi
     if test $# != 1; then
 	echo >&2 repo switch takes exactly one branch name as parameter.
 	exit 1
