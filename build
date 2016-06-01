@@ -206,10 +206,10 @@ hashfilelist()
 			*.Z|*.taz)
 			    compress -cd
 			    ;;
-			*.lz|*.lzma|tlz)
+			*.lz|*.lzma|*.tlz)
 			    lzma -cd
 			    ;;
-			*.xz|txz)
+			*.xz|*.txz)
 			    xz -cd
 			    ;;
 		    esac |
