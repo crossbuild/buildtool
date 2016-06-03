@@ -198,6 +198,7 @@ to $BUGMAIL with the command line and the output of this
 tool and all other information that you think might be useful to diagnose
 this issue. 
 EOT
+	git reset HEAD^
     fi
     rm .tmp.alllogs
     case "$i" in
