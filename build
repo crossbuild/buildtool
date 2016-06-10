@@ -999,13 +999,13 @@ publish()
     mkdir -p $MANIFESTDIR
     > $MANIFEST.tmp
     if test "$BRANCH" != .; then
-	for i in $(seq -w 00 99) x; do
+	for i in $(seq -w 000 999) x; do
 	    if ! test -d $PKGPOOL/${BRANCH}_$DATE$i; then
 		break
 	    fi
 	done
 	if test $i = x; then
-	    logerr No more than 100 releases allowed per week.
+	    logerr No more than 1000 releases allowed per week.
 	    exit 1
 	fi
 	CURRENT=${BRANCH}_$DATE$i
