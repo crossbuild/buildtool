@@ -373,7 +373,7 @@ package()
 		    lzma -c9
 		    ;;
 		*.xz|txz)
-		    xz -c9 --check=crc32
+		    xz -c9 --check=crc32 --lzma2=dict=1MiB
 		    ;;
 		*)
 		    logerr "Unsupported file format: ${FORMAT[NUM]}"
