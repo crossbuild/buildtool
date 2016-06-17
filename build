@@ -976,12 +976,9 @@ purgepool()
 publish()
 {
     local HASHPOOL=$PKGPOOL/.hashpool
-    local BRANCH=$1
-    local DATE=$(date +%y%W)
+    local RELEASE=$1
     local RELEASEDIR=
     local RELLINK=../.hashpool
-    local CURRENT
-    local i
     local fullmeta
     local MANIFESTDIR=$PKGPOOL/.manifest
     local MANIFEST=$MANIFESTDIR/$(hostname).$(date +%s).$$
@@ -992,24 +989,18 @@ publish()
 
     if test "$(id -un)" != "$releaseuser"; then
 	ssh -o NoHostAuthenticationForLocalhost=yes "$releaseuser"@localhost \
-	    "cd $base && $srcbase/$(basename $0) --pkgpool $PKGPOOL --releaseuser $releaseuser --publish-internal $BRANCH"
+	    "cd $base && $srcbase/$(basename $0) --pkgpool $PKGPOOL --releaseuser $releaseuser --publish-internal $RELEASE"
 	exit 0
     fi
 
     mkdir -p $MANIFESTDIR
     > $MANIFEST.tmp
-    if test "$BRANCH" != .; then
-	for i in $(seq -w 000 999) x; do
-	    if ! test -d $PKGPOOL/${BRANCH}_$DATE$i; then
-		break
-	    fi
-	done
-	if test $i = x; then
-	    logerr No more than 1000 releases allowed per week.
+    if test "$RELEASE" != .; then
+	if test -d $PKGPOOL/$RELEASE; then
+	    logerr "Release $RELEASE exists already."
 	    exit 1
 	fi
-	CURRENT=${BRANCH}_$DATE$i
-	RELEASEDIR=$PKGPOOL/$CURRENT
+	RELEASEDIR=$PKGPOOL/$RELEASE
 	mkdir -p $RELEASEDIR.tmp
 	echo $RELEASEDIR >> $MANIFEST.tmp
     fi
@@ -1061,7 +1052,7 @@ publish()
 	    fi
 	    echo -n ' [link]'
 	    ln -s $RELLINK/$hash/{$meta,$pkg} $RELEASEDIR.tmp/
-	    test -h $HASHPOOL/$hash/.needed.$CURRENT || ln -s ../../../../../$CURRENT $HASHPOOL/$hash/.needed.$CURRENT
+	    test -h $HASHPOOL/$hash/.needed.$RELEASE || ln -s ../../../../../$RELEASE $HASHPOOL/$hash/.needed.$RELEASE
 	fi
 	test "$have" = 0 || echo
     done
@@ -1080,14 +1071,11 @@ publish()
 	touch $RELEASEDIR.tmp/.backlinked
 	(
 	    cd $srcbase
-	    echo ${BRANCH}_$DATE$i
+	    echo ${RELEASE}
 	    git rev-parse HEAD
 	) > $RELEASEDIR.tmp/version
 	mv -T $RELEASEDIR.tmp $RELEASEDIR
-	rm -f $PKGPOOL/${BRANCH}_current
-	ln -s $CURRENT $PKGPOOL/${BRANCH}_current
-	echo $PKGPOOL/${BRANCH}_current >> $MANIFEST.tmp
-	logmsg release ${BRANCH}_$DATE$i complete
+	logmsg release ${RELEASE} complete
     fi
     sort -u $MANIFEST.tmp > $MANIFEST.sorted
     rm $MANIFEST.tmp
