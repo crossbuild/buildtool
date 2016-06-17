@@ -1228,6 +1228,9 @@ while test $# -gt 0; do
 	    listarchs
 	    exit 0
 	    ;;
+	--noperl)
+	    haveperl=
+	    ;;
 	--help)
 	    cat <<EOT
 Usage: build [options] [recipe] [target]
