@@ -43,11 +43,6 @@ logmsg()
     echo "[$(date '+%F %T')] $@"
 }
 
-lognmsg()
-{
-    echo -n "[$(date '+%F %T')] $@"
-}
-
 logerr()
 {
     logmsg >&2 "$@"
@@ -265,6 +260,7 @@ package()
     AUTO=()
     NOHASH=()
     FORMAT=()
+    rm -f "$states/$target/$recipe/packages" "$states/$target/$recipe/nocache"
     while read T1 T2 FILE RELOCINP; do
 	if test "$T1" = '#|pkg'; then
 	    case "$T2" in
@@ -294,6 +290,11 @@ package()
 		    ;;
 		format)
 		    FORMAT[${#FORMAT[@]}-1]="$(eval "echo $FILE")"
+		    case "$FORMAT[${#FORMAT[@]}-1]" in
+			plain)
+			    touch "$states/$target/$recipe/nocache"
+			    ;;
+		    esac
 		    ;;
 		*)
 		    echo "Unknown package tag: $T2".
@@ -392,6 +393,7 @@ package()
 		    mv $pool/${PKGS[NUM]}.newmeta $pool/${PKGS[NUM]}.meta
 		    ;;
 	    esac
+	    echo ${PKGS[NUM]} >> "$states/$target/$recipe/packages"
 	fi
     done
     logmsg Packaging successfully completed.
@@ -840,6 +842,64 @@ calcdeps()
     fi
 }
 
+publishpackage()
+{
+    local target=$1
+    local recipe=$2
+    local HASHPOOL=$PKGPOOL/.hashpool
+    local MANIFESTDIR=$PKGPOOL/.manifest
+    local MANIFEST=$(hostname).$target-$recipe.$(date +%s).$$
+    local hash="$target/$recipe/$(sha1sum "$states/$target/$recipe/done" |
+	sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\).*|\1/\2|')"
+    local cmd
+    local pkg
+    if ! test -r "$states/$target/$recipe/nocache" &&
+	! test -d "$HASHPOOL/$hash"; then
+	cmd="mkdir -p $HASHPOOL/$hash.$MANIFEST &&
+	    cp $log/$target-$recipe.log.gz $HASHPOOL/$hash.$MANIFEST/.log.gz"
+	for pkg in $(<"$states/$target/$recipe/packages"); do
+	    local FORMAT=$(sed -ne 's|^format ||p' "$pool/$pkg.meta")
+	    test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
+	    cmd="$cmd && cp $pool/$pkg.meta $HASHPOOL/$hash.$MANIFEST/$pkg.meta &&
+		cp $pool/$pkg.$FORMAT $HASHPOOL/$hash.$MANIFEST/$pkg.$FORMAT"
+	done
+	cmd="$cmd && ( mv -T $HASHPOOL/$hash.$MANIFEST $HASHPOOL/$hash &&
+	    mkdir -p $MANIFESTDIR &&
+	    echo $HASHPOOL/$hash > $MANIFESTDIR/$MANIFEST.done ||
+	    rm -rf $HASHPOOL/$hash.$MANIFEST )"
+	if test "$(id -un)" != "$releaseuser"; then
+	    ssh -o NoHostAuthenticationForLocalhost=yes \
+		"$releaseuser"@localhost "$cmd"
+	else
+	    echo "$cmd" | bash
+	fi
+    fi
+}
+
+publishdepmake()
+{
+    local HASHPOOL=$PKGPOOL/.hashpool
+    local MANIFESTDIR=$PKGPOOL/.manifest
+    local MANIFEST=$(hostname)._depmake.$(date +%s).$$
+    local hash=$(echo $recipesum |
+	sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\)$|_depmake/\1/\2|')
+    local cmd
+    if ! test -d "$HASHPOOL/$hash"; then
+	cmd="mkdir -p $HASHPOOL/$hash.$MANIFEST &&
+	    cp $states/_depmake $HASHPOOL/$hash.$MANIFEST/_depmake &&
+	    ( mv -T $HASHPOOL/$hash.$MANIFEST $HASHPOOL/$hash &&
+	    mkdir -p $MANIFESTDIR &&
+	    echo $HASHPOOL/$hash > $MANIFESTDIR/$MANIFEST.done ||
+	    rm -rf $HASHPOOL/$hash.$MANIFEST )"
+	if test "$(id -un)" != "$releaseuser"; then
+	    ssh -o NoHostAuthenticationForLocalhost=yes \
+		"$releaseuser"@localhost "$cmd"
+	else
+	    echo "$cmd" | bash
+	fi
+    fi
+}
+
 invoke()
 {
     local recipe="$1"
@@ -852,6 +912,7 @@ invoke()
     local hashes
     local oldrecipes
     local usedrecipes
+    local pkg
     local pkghash
     local srcdir=$obj/$target/$recipe/srcdir
     local blddir=$obj/$target/$recipe/build
@@ -886,10 +947,16 @@ invoke()
 	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
 	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
 	    mkdir -p $pool "$log"
-	    for i in $PKGPOOL/.hashpool/$pkghash/*; do
-		if test -r "$i"; then
-		    rm -f "$pool/$(basename $i)"
-		    $prepopulatebin "$i" "$pool/"
+	    rm -f "$states/$target/$recipe/packages"
+	    for pkg in $PKGPOOL/.hashpool/$pkghash/*; do
+		if test -r "$pkg"; then
+		    rm -f "$pool/$(basename $pkg)"
+		    $prepopulatebin "$pkg" "$pool/"
+		    case "$pkg" in
+			*.meta)
+			    echo $(basename $pkg .meta) >> "$states/$target/$recipe/packages"
+			    ;;
+		    esac
 		fi
 	    done
 	    if test -r $PKGPOOL/.hashpool/$pkghash/.log.gz; then
@@ -934,6 +1001,7 @@ invoke()
 		forcerm "$obj/$target/$recipe"
 	    fi
 	fi
+	test "$release" && publishpackage $target $recipe || true
     fi
 }
 
@@ -945,23 +1013,23 @@ purgebuilds()
 
 purgepool()
 {
-    local i
     local FILE
     local BASE
+    local pkg
 
     logmsg Purging pool
 
     diff <(
-	for i in $pool/*.meta; do
-	    local STATEFILE=$(head -n 1 $i |
+	for pkg in $pool/*.meta; do
+	    local STATEFILE=$(head -n 1 $pkg |
 		sed -e "s|.* <STATE>|$states|")
 	    if test -r "$STATEFILE" -a \
 		"$(sha1sum "$STATEFILE" | awk '{print $1}')" = \
-		"$(head -n 1 $i | awk '{print $1}')"; then
-		echo $i
-		BASE=$pool/$(basename $i .meta)
+		"$(head -n 1 $pkg | awk '{print $1}')"; then
+		echo $pkg
+		BASE=$pool/$(basename $pkg .meta)
 		(
-		    sed -ne "s|^format |$BASE.|p" $i
+		    sed -ne "s|^format |$BASE.|p" $pkg
 		    echo $BASE.tar.gz
 		) | head -n 1
 	    fi
@@ -979,13 +1047,7 @@ publish()
     local RELEASE=$1
     local RELEASEDIR=
     local RELLINK=../.hashpool
-    local fullmeta
-    local MANIFESTDIR=$PKGPOOL/.manifest
-    local MANIFEST=$MANIFESTDIR/$(hostname).$(date +%s).$$
-
-    if test "$onlypublish" != 1; then
-	purgepool
-    fi
+    local recipe
 
     if test "$(id -un)" != "$releaseuser"; then
 	ssh -o NoHostAuthenticationForLocalhost=yes "$releaseuser"@localhost \
@@ -993,8 +1055,6 @@ publish()
 	exit 0
     fi
 
-    mkdir -p $MANIFESTDIR
-    > $MANIFEST.tmp
     if test "$RELEASE" != .; then
 	if test -d $PKGPOOL/$RELEASE; then
 	    logerr "Release $RELEASE exists already."
@@ -1002,69 +1062,26 @@ publish()
 	fi
 	RELEASEDIR=$PKGPOOL/$RELEASE
 	mkdir -p $RELEASEDIR.tmp
-	echo $RELEASEDIR >> $MANIFEST.tmp
     fi
 
-    for fullmeta in $pool/*.meta; do
-	local FORMAT=$(sed -ne 's|^format ||p' $fullmeta)
-	test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
-	local fullpkg=$(echo $fullmeta | sed -e 's|\.meta$||').$FORMAT
-	local hash=$(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3/\4/\1/\2|;q' $fullmeta)
-	local logname=$(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3-\4|;q' $fullmeta)
-	local pkg=$(basename $fullpkg)
-	local meta=$(basename $fullmeta)
-	local have=0
-	mkdir -p $HASHPOOL/$hash
-	if ! test -r $HASHPOOL/$hash/$meta; then
-	    if test "$have" = 0; then
-		lognmsg $pkg
-		have=1
+    for recipe in $states/*/*/packages; do
+	local recipedir=$(dirname $recipe)
+	if test -r $recipe && ! test -r $recipedir/nocache; then
+	    local firstpkg=$(head -n 1 $recipe)
+	    if test "$firstpkg"; then
+		local fullmeta=$pool/$firstpkg.meta
+		logmsg publishing $(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3/\4|;q' $fullmeta)
+		publishpackage $(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3 \4|;q' $fullmeta)
+		if test "$RELEASEDIR"; then
+		    local hash=$(sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) <STATE>/\(.*\)/\(.*\)/done$|\3/\4/\1/\2|;q' $fullmeta)
+		    for pkg in $HASHPOOL/$hash/*; do
+			ln -s $RELLINK/$hash/$(basename $pkg) $RELEASEDIR.tmp/
+		    done
+		    test -h $HASHPOOL/$hash/.needed.$RELEASE || ln -s ../../../../../$RELEASE $HASHPOOL/$hash/.needed.$RELEASE
+		fi
 	    fi
-	    echo -n ' [meta]'
-	    cp $fullmeta $HASHPOOL/$hash/$meta.tmp
-	    mv $HASHPOOL/$hash/$meta.tmp $HASHPOOL/$hash/$meta
-	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
 	fi
-	if ! test -r $HASHPOOL/$hash/$pkg; then
-	    if test "$have" = 0; then
-		lognmsg $pkg
-		have=1
-	    fi
-	    echo -n ' [pkg]'
-	    cp $fullpkg $HASHPOOL/$hash/$pkg.tmp
-	    mv $HASHPOOL/$hash/$pkg.tmp $HASHPOOL/$hash/$pkg
-	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
-	fi
-	if test -r $log/$logname.log.gz && ! test -r $HASHPOOL/$hash/.log.gz; then
-	    if test "$have" = 0; then
-		lognmsg $pkg
-		have=1
-	    fi
-	    echo -n ' [log]'
-	    cp $log/$logname.log.gz $HASHPOOL/$hash/.log.gz.tmp
-	    mv $HASHPOOL/$hash/.log.gz.tmp $HASHPOOL/$hash/.log.gz
-	    echo $HASHPOOL/$hash >> $MANIFEST.tmp
-	fi
-	if test "$RELEASEDIR"; then
-	    if test "$have" = 0; then
-		lognmsg $pkg
-		have=1
-	    fi
-	    echo -n ' [link]'
-	    ln -s $RELLINK/$hash/{$meta,$pkg} $RELEASEDIR.tmp/
-	    test -h $HASHPOOL/$hash/.needed.$RELEASE || ln -s ../../../../../$RELEASE $HASHPOOL/$hash/.needed.$RELEASE
-	fi
-	test "$have" = 0 || echo
     done
-
-    local hash=$(echo $recipesum | sed -e 's|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\)$|_depmake/\1/\2|')
-    mkdir -p $HASHPOOL/$hash
-    if ! test -r $HASHPOOL/$hash/_depmake; then
-	logmsg 'dependency information'
-	cp $states/_depmake $HASHPOOL/$hash/_depmake.tmp
-	mv $HASHPOOL/$hash/_depmake.tmp $HASHPOOL/$hash/_depmake
-	echo $HASHPOOL/$hash >> $MANIFEST.tmp
-    fi
 
     logmsg buildcache published
     if test "$RELEASEDIR"; then
@@ -1075,11 +1092,12 @@ publish()
 	    git rev-parse HEAD
 	) > $RELEASEDIR.tmp/version
 	mv -T $RELEASEDIR.tmp $RELEASEDIR
+	local MANIFESTDIR=$PKGPOOL/.manifest
+	local MANIFEST=$MANIFESTDIR/$(hostname).$(date +%s).$$
+	mkdir -p $MANIFESTDIR
+	echo $RELEASEDIR > $MANIFEST.done
 	logmsg release ${RELEASE} complete
     fi
-    sort -u $MANIFEST.tmp > $MANIFEST.sorted
-    rm $MANIFEST.tmp
-    mv $MANIFEST.sorted $MANIFEST.done
 }
 
 recipe=all
@@ -1382,6 +1400,7 @@ else
 	    rm -f $states/*/*/depchk
 	fi
     fi
+    test "$release" && publishdepmake || true
     for pkgiter in $(sed -ne 's|^_PKG/\(.*\): .* #GEN$|\1|p' states/_depmake |
 		     sort | uniq -d); do
 	logerr "WARNING: $pkgiter is generated by multiple recipes and targets:"
