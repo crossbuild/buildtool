@@ -1100,6 +1100,107 @@ publish()
     fi
 }
 
+print_info_openblock()
+{
+    HEADLINEPRINTED=0
+}
+
+print_info_headline()
+{
+    if test "$HEADLINEPRINTED" = 0; then
+        echo "$@"
+        HEADLINEPRINTED=1
+    fi
+}
+
+print_info_closeblock()
+{
+    if test "$HEADLINEPRINTED" = 1; then
+        echo
+    fi
+}
+
+print_info_matchprint()
+{
+    local T1
+    local PKG
+    local MATCH="$1"
+    shift
+
+    print_info_openblock
+    while read T1 PKG; do
+        if test "$T1" = "$MATCH"; then
+            print_info_headline "$@"
+            echo "    $PKG"
+        fi
+    done < $FILE
+    print_info_closeblock
+}
+
+print_info()
+{
+    local T1
+    local T2
+    local PKG
+    local RELOC
+    local HEADLINEPRINTED
+    local FILE="$1"
+
+    print_info_openblock
+    while read T1 PKG; do
+	if test "$T1" = '#|info'; then
+	    if test "$HEADLINEPRINTED" = 0; then
+		HEADLINEPRINTED=1
+	    fi
+	    echo "$PKG"
+	fi
+    done < $FILE
+    print_info_closeblock
+
+    print_info_openblock
+    local FORMATPRINTED=1
+    while read T1 T2 PKG RELOC; do
+        if test "$T1" = '#|pkg'; then
+            case "$T2" in
+                name)
+                    if test "$FORMATPRINTED" = 0; then
+                        echo ".$DEFAULTFORMAT"
+                    fi
+                    if test "$PKG" = nopackage; then
+                        FORMATPRINTED=1
+                    else
+                        print_info_headline created packages:
+                        echo -n "    $PKG"
+                        FORMATPRINTED=0
+                    fi
+                    ;;
+                format)
+                    echo ".$PKG"
+                    FORMATPRINTED=1
+                    ;;
+            esac
+        fi
+    done < $FILE
+    if test "$FORMATPRINTED" = 0; then
+        echo ".$DEFAULTFORMAT"
+    fi
+    print_info_headline no packages created.
+    print_info_closeblock
+
+    print_info_openblock
+    while read T1 PKG RELOC; do
+        if test "$T1" = '#|dep' && test "$PKG" != auto; then
+            print_info_headline explicit direct build dependencies on other builds:
+            echo "    $PKG $RELOC"
+        fi
+    done < $FILE
+    print_info_closeblock
+
+    print_info_matchprint '#|ins' 'direct build dependencies on other artifacts:'
+    print_info_matchprint '#|blk' 'locked build dependencies on other artifacts:'
+    print_info_matchprint '#|blkbase' 'locked build dependencies on other artifacts from other builds:'
+}
+
 recipe=all
 target=all
 varset=0
@@ -1212,6 +1313,9 @@ while test $# -gt 0; do
 	--resolve-ins)
 	    whattodo=resolve_ins
 	    ;;
+	--info)
+	    whattodo=info
+	    ;;
 	--pkgpool)
 	    PKGPOOL="$2"
 	    shift
@@ -1267,6 +1371,7 @@ Options:
   --pkgpool [DIR]             Directory of alternative package pool.
   --releaseuser [USER]        User name of release user with elevated
                               priviliges.
+  --info                      Print information about specified recipe.
   --listrecipes               List available recipes and exit.
   --listtargets               List available targets and exit.
   --help                      Print this message and exit.
@@ -1369,6 +1474,16 @@ if test "$whattodo" = resolve_ins; then
     fi
     resolve_ins 0 < $file
     forcerm $tmp
+    exit 0
+fi
+
+if test "$whattodo" = info; then
+    file=$(getrecipe $recipe $target)
+    if test "$file" = ""; then
+        logerr "Nothing known about $recipe on $target."
+        exit 1
+    fi
+    print_info $file
     exit 0
 fi
 
