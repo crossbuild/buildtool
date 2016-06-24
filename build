@@ -937,7 +937,15 @@ invoke()
 	while test "$oldrecipes" != "$usedrecipes"; do
 	    oldrecipes="$usedrecipes"
             usedrecipes="$( ( for h in $usedrecipes; do echo $h; done; awk '
-	    /^#\|rcp /{ print "'"$recipes"'/"$2 } ' $usedrecipes ) | sort -u)"
+	    /^[^#]/{
+		sub(/\$target/, "'"$target"'", $0);
+		while (match($0, /\$recipes\/[^[:space:]()$]+/)) {
+		    p = substr($0, RSTART, RLENGTH);
+		    sub(/\$recipes\//, "'"$recipes"'/", p);
+		    print p;
+		    $0 = substr($0, RSTART + RLENGTH);
+		}
+	    }' $usedrecipes ) | sort -u)"
         done
 	local tmp=$obj/$target/$recipe/tmp
 	mkdir -p $tmp
