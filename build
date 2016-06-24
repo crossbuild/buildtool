@@ -74,13 +74,16 @@ genhash()
 	esac
         if test -f $FILE; then
             sha1sum $FILE
-	elif test -d "$FILE" -a "$dirty" = 1; then
-	    echo "efefefefefefefefefefefefefefefefefefefef $FILE"
         elif test -e $FILE/.git; then
             (
 		flock -s 200
                 cd $FILE
-                git show-ref --head | sed -ne 's| HEAD$| '"$FILE"'|p'
+		if test "$dirty" && test "$(git status --porcelain -uall)"; then
+		    sha1sum $(git status --porcelain -uall | awk '{print $2}') 2>&1 |
+		    sha1sum | sed -e "s|[[:space:]].*| $FILE|"
+		else
+		    git show-ref --head | sed -ne 's| HEAD$| '"$FILE"'|p'
+		fi
 	    ) 200>"$states/_lock/src/$(basename "$FILE")"
         elif test -f $FILE/.gitcommitid; then
             sed -ne 's|$| '"$FILE"'|p' $FILE/.gitcommitid
@@ -591,7 +594,8 @@ srcinstaller()
 	(
 	    flock -s 200
 	    cd $src/$DIR
-	    if test -e .git -a \( "$dirty" != 1 -o "$HEAD" != HEAD \); then
+	    if test -e .git && ( test -z "$dirty" || test "$HEAD" != HEAD ||
+		test -z "$(git status --porcelain -uall)" ); then
 		git archive --format=tar "$HEAD"
 	    else
 		tar -c --exclude=./.git .
@@ -942,6 +946,7 @@ invoke()
 	    sed -e "s|^\([^ ]*\).*|$pool/\1.meta|") $(awk '
             /^#\|src /{ print "'"$src"'/"$2 } ' $usedrecipes)"
 	forcerm $tmp
+	rm -f "$states/$target/$recipe/done"
 	genhash ${hashes//\[/\\\[} > "$states/$target/$recipe/hash"
 	local pkghash=$(sha1sum "$states/$target/$recipe/hash" | sed -e "s|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) .*|$target/$recipe/\1/\2|")
 	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
@@ -1205,7 +1210,7 @@ recipe=all
 target=all
 varset=0
 nodeps=0
-dirty=0
+dirty=
 force=0
 release=
 onlypublish=0
@@ -1295,8 +1300,7 @@ while test $# -gt 0; do
 	    nodeps=1
 	    ;;
 	--dirty)
-	    nodeps=1
-	    dirty=1
+	    dirty=--dirty
 	    ;;
 	--purgepool)
 	    purgepool=1
@@ -1354,9 +1358,8 @@ Options:
                               state.
   --nodeps                    Rebuild mentioned recipe on target ignoring any
                               dependencies.
-  --dirty                     Rebuild mentioned recipe on target including
-                              changes not yet committed.  This implies
-                              --nodeps.
+  --dirty                     Also consider changes not yet committed for
+                              builds.
   --verbose                   Be verbose, even when there is no error.
   --prepopulate=yes|no|copy|link   Pre-populate build results from the build
                               cache using link mode (yes|link) or copy mode
@@ -1404,7 +1407,7 @@ EOT
     shift
 done
 
-if test "$release" -a "$dirty" = 1; then
+if test "$release" -a "$dirty"; then
     logerr Specifying --dirty together with --release or --writecache is not allowed.
     exit 1
 fi
@@ -1494,9 +1497,6 @@ case "$force" in
 esac
 
 if test $nodeps = 1; then
-    if test $dirty = 1; then
-	forcerm "$states/$target/$recipe"
-    fi
     invoke "$recipe" "$target"
 else
     makefilesum=$(sed -ne 's|^##RECIPESUM## ||p' "$states/_depmake" 2>/dev/null || true)
@@ -1531,7 +1531,7 @@ else
 	cat "$states/_depmake"
     fi > "$states/_depmake_tmp"
     make $parallel -f "$states/_depmake_tmp" --no-print-directory \
-	BUILD="$0 --prepopulate=$prepopulate $keepbuilds $verbose --pkgpool=$PKGPOOL" "$target/$recipe"
+	BUILD="$0 --prepopulate=$prepopulate $dirty $keepbuilds $verbose --pkgpool=$PKGPOOL" "$target/$recipe"
     rm "$states/_depmake_tmp"
 fi
 
