@@ -299,6 +299,9 @@ package()
 			    ;;
 		    esac
 		    ;;
+		nocache)
+		    touch "$states/$target/$recipe/nocache"
+		    ;;
 		*)
 		    echo "Unknown package tag: $T2".
 		    exit 1
@@ -960,7 +963,7 @@ invoke()
 	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
 	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
 	    mkdir -p $pool "$log"
-	    rm -f "$states/$target/$recipe/packages"
+	    rm -f "$states/$target/$recipe/packages" "$states/$target/$recipe/nocache"
 	    for pkg in $PKGPOOL/.hashpool/$pkghash/*; do
 		if test -r "$pkg"; then
 		    rm -f "$pool/$(basename $pkg)"
