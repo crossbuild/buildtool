@@ -87,6 +87,8 @@ pull()
 			basehash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"linux"'$|\1|p')
 			;;
 		esac
+		SUB_ON[${#SUB_ON[@]}]="$PRJ"
+		SUB_MOD=( ${SUB_MOD[@]/"$PRJ"} )
 	    else
 		echo "NOT refreshing $PRJ with local modifications!"
 		case "$PRJ" in
