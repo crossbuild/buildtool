@@ -1138,7 +1138,7 @@ garbagecollect_list()
 
     for arch in $PKGPOOL/.hashpool/${target-*}; do
 	case "$arch" in
-	    _depmake)
+	    */_depmake)
 		for inst in $arch/*/*; do
 		    garbagecollect_listold $inst
 		done
