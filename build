@@ -1116,6 +1116,64 @@ publish()
     fi
 }
 
+garbagecollect_listold()
+{
+    if test -d "$1" && (( $(stat -c %Y "$1") < LIMIT )); then
+	echo "$1"
+    fi
+}
+
+garbagecollect_list()
+{
+    local arch
+    local pkg
+    local inst
+    local ref
+    local target="$1"
+    local recipe="$2"
+    local LIMIT="$(($(date +%s)-60*60*24*$3))"
+
+    test "$target" != all || unset target
+    test "$recipe" != all || unset recipe
+
+    for arch in $PKGPOOL/.hashpool/${target-*}; do
+	case "$arch" in
+	    _depmake)
+		for inst in $arch/*/*; do
+		    garbagecollect_listold $inst
+		done
+		;;
+	    *)
+		for pkg in $arch/${recipe-*}; do
+		    for inst in $pkg/*/*; do
+			for ref in $inst/.needed.*; do
+			    test -e $ref && continue 2
+			done
+			garbagecollect_listold $inst
+		    done
+		done
+		;;
+	esac
+    done
+}
+
+garbagecollect()
+{
+    local target="$1"
+    local recipe="$2"
+    local garbagecollectdays="$3"
+
+    if test "$(id -un)" != "$releaseuser"; then
+	ssh -o NoHostAuthenticationForLocalhost=yes "$releaseuser"@localhost \
+	    "cd $base && $srcbase/$(basename $0) --pkgpool $PKGPOOL --releaseuser $releaseuser --garbagecollect=$garbagecollectdays $recipe $target"
+	exit 0
+    fi
+
+    garbagecollect_list "$target" "$recipe" "$garbagecollectdays" |
+    sed -e 's|^|rm -rf |' |
+    bash
+}
+
 print_info_openblock()
 {
     HEADLINEPRINTED=0
@@ -1234,6 +1292,7 @@ keepbuilds=
 purgebuilds=0
 verbose=
 whattodo=build
+garbagecollectdays=60
 
 if test -r "$base/.buildrc/pkgpool"; then
     PKGPOOL=$(< "$base/.buildrc/pkgpool")
@@ -1330,6 +1389,20 @@ while test $# -gt 0; do
 	    ;;
 	--info)
 	    whattodo=info
+	    ;;
+	--garbagecollect)
+	    whattodo=garbagecollect
+	    ;;
+	--garbagecollect=*)
+	    whattodo=garbagecollect
+	    garbagecollectdays="${1/--garbagecollect=}"
+	    ;;
+	--garbagecollect-list)
+	    whattodo=garbagecollect-list
+	    ;;
+	--garbagecollect-list=*)
+	    whattodo=garbagecollect-list
+	    garbagecollectdays="${1/--garbagecollect-list=}"
 	    ;;
 	--pkgpool)
 	    PKGPOOL="$2"
@@ -1498,6 +1571,16 @@ if test "$whattodo" = info; then
         exit 1
     fi
     print_info $file
+    exit 0
+fi
+
+if test "$whattodo" = garbagecollect; then
+    garbagecollect "$target" "$recipe" "$garbagecollectdays"
+    exit 0
+fi
+
+if test "$whattodo" = garbagecollect-list; then
+    garbagecollect_list "$target" "$recipe" "$garbagecollectdays"
     exit 0
 fi
 
