@@ -293,7 +293,7 @@ package()
 		    ;;
 		format)
 		    FORMAT[${#FORMAT[@]}-1]="$(eval "echo $FILE")"
-		    case "$FORMAT[${#FORMAT[@]}-1]" in
+		    case "${FORMAT[${#FORMAT[@]}-1]}" in
 			plain)
 			    touch "$states/$target/$recipe/nocache"
 			    ;;
