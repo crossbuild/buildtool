@@ -593,6 +593,11 @@ srcinstaller()
 		cd $srcbase
 		git submodule update src/$DIR
 	    fi
+	    (
+		cd $src/$DIR
+		git cat-file -t "$HEAD" | grep -q '\(tree\)\|\(commit\)' ||
+		git fetch --tags
+	    )
 	) 200>"$states/_lock/src/$DIR"
 	(
 	    flock -s 200
