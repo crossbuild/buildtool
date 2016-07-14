@@ -103,69 +103,71 @@ pull()
 
 push()
 {
-    pull "$@"
-    if test ${#SUB_MOD[@]} = 0; then
-	echo No modifications to push.
-	exit 1
-    fi
-    cat <<EOT > .tmp.alllogs
+    retryid=
+    for retry in 0 1 2; do
+	pull "$@"
+	if test ${#SUB_MOD[@]} = 0; then
+	    echo No modifications to push.
+	    exit 1
+	fi
+	cat <<EOT > .tmp.alllogs
 # Create a commit message from all the commits below and
 === DELETE AT LEAST THIS LINE ===
 
 EOT
-    ALLDIRS=
-    includeslinux=0
-    for i in "${SUB_MOD[@]}"; do
-	echo "$i"
-	ALLDIRS="$ALLDIRS src/$i"
-	uphash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"$i"'$|\1|p')
-	cd src/$i
-	case "$i" in
-	    linux)
-		includeslinux=1
-		downhash=$(git show-ref --head | sed -ne 's| HEAD$||p')
-		if test $basehash = $uphash; then
-		    uptype=none
-		elif test $(git merge-base $basehash $uphash) = $basehash; then
-		    uptype=ff
-		else
-		    uptype=complex
-		fi
-		if test $basehash = $downhash; then
-		    downtype=none
-		elif test $(git merge-base $basehash $downhash) = $basehash; then
-		    downtype=ff
-		else
-		    downtype=complex
-		fi
-		if test $downtype = none -o $uphash = $downhash; then
-		    git checkout $uphash
-		elif test $uptype = none -o $downtype = ff; then
-		    if test $uptype != none; then
-		        git rebase --onto $uphash $basehash $downhash
+	ALLDIRS=
+	includeslinux=0
+	for i in "${SUB_MOD[@]}"; do
+	    echo "$i"
+	    ALLDIRS="$ALLDIRS src/$i"
+	    uphash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"$i"'$|\1|p')
+	    cd src/$i
+	    case "$i" in
+		linux)
+		    includeslinux=1
+		    downhash=$(git show-ref --head | sed -ne 's| HEAD$||p')
+		    if test $basehash = $uphash; then
+			uptype=none
+		    elif test $(git merge-base $basehash $uphash) = $basehash; then
+			uptype=ff
+		    else
+			uptype=complex
 		    fi
-		    git log --no-merges --format=format:'# commit %h from linux%n%s%n%n%b' $basehash..$downhash >> ../../.tmp.alllogs
-		else
-		    if test $uptype = ff; then
-		        cat <<EOT
+		    if test $basehash = $downhash; then
+			downtype=none
+		    elif test $(git merge-base $basehash $downhash) = $basehash; then
+			downtype=ff
+		    else
+			downtype=complex
+		    fi
+		    if test $downtype = none -o $uphash = $downhash; then
+			git checkout $uphash
+		    elif test $uptype = none -o $downtype = ff; then
+			if test $uptype != none; then
+			    git rebase --onto $uphash $basehash $downhash
+			fi
+			git log --no-merges --format=format:'# commit %h from linux%n%s%n%n%b' $basehash..$downhash >> ../../.tmp.alllogs
+		    else
+			if test $uptype = ff; then
+			    cat <<EOT
 You did a complex change but upstream there were a few commits you may
 want to merge into your tree before continuing:
 
 EOT
-		        git log --oneline $basehash..$uphash
-		    else
-		        cat <<EOT
+			    git log --oneline $basehash..$uphash
+			else
+			    cat <<EOT
 You did a complex change but upstream there was also a complex change.
 Thus you may want to merge things together before continuing.
 EOT
+			fi
+			echo
+			exit 1
 		    fi
-		    echo
-		    exit 1
-		fi
-		;;
-	    *)
-		if ! git merge -m '[repo push] automated merge' $uphash; then
-		    cat <<EOT
+		    ;;
+		*)
+		    if ! git merge -m '[repo push] automated merge' $uphash; then
+			cat <<EOT
 Automated merge failed.
 
 Do this:
@@ -176,17 +178,37 @@ Do this:
 
 After having that completed rerun this tool.
 EOT
-		    rm .tmp.alllogs
-		    exit 1
-		fi
-		git log --no-merges --format=format:"# commit %h from $i%n%s%n%n%b" $uphash..HEAD >> ../../.tmp.alllogs
+			rm .tmp.alllogs
+			exit 1
+		    fi
+		    git log --no-merges --format=format:"# commit %h from $i%n%s%n%n%b" $uphash..HEAD >> ../../.tmp.alllogs
+		    ;;
+	    esac
+	    git push origin +HEAD:refs/heads/tmp
+	    cd ../..
+	done
+	if test "$retryid"; then
+	    git commit -C "$retryid" $ALLDIRS
+	else
+	    git commit -t .tmp.alllogs $ALLDIRS
+	fi
+	if git push origin HEAD; then
+	    retryid=
+	else
+	    retryid=$(git rev-parse HEAD)
+	    git reset HEAD^
+	fi
+	rm .tmp.alllogs
+	case "$i" in
+	    linux)
+		rm -f .basehash.linux
 		;;
 	esac
-	git push origin +HEAD:refs/heads/tmp
-	cd ../..
+	if test -z "$retryid"; then
+	    break;
+	fi
     done
-    git commit -t .tmp.alllogs $ALLDIRS
-    if ! git push origin HEAD; then
+    if test "$retryid"; then
 	cat <<EOT
 It seems the push failed. :(
 
@@ -200,14 +222,8 @@ to $BUGMAIL with the command line and the output of this
 tool and all other information that you think might be useful to diagnose
 this issue. 
 EOT
-	git reset HEAD^
+	exit 1
     fi
-    rm .tmp.alllogs
-    case "$i" in
-	linux)
-	    rm -f .basehash.linux
-	    ;;
-    esac
 }
 
 status()
