@@ -46,9 +46,9 @@ populatesubs()
     git submodule init
     for i in $(git submodule status ${FULLSUBS[@]-} | sed -e 's|\(.\)\([0-9a-f]*\) \([^ ]*\).*|\1,\3|' | tr ' ' .); do
 	case "$i" in
-	    +,*) SUB_MOD[${#SUB_MOD[@]}]="${i/+,src\/}";;
-	    -,*) SUB_OFF[${#SUB_OFF[@]}]="${i/-,src\/}";;
-	    .,*) SUB_ON[${#SUB_ON[@]}]="${i/.,src\/}";;
+	    +,*) SUB_MOD[${#SUB_MOD[@]}]="/${i/+,src\/}/";;
+	    -,*) SUB_OFF[${#SUB_OFF[@]}]="/${i/-,src\/}/";;
+	    .,*) SUB_ON[${#SUB_ON[@]}]="/${i/.,src\/}/";;
 	    *) echo Error parsing git submodule status.; exit 1;;
 	esac
     done
@@ -70,7 +70,7 @@ pull()
     fi
     populatesubs "$@"
     if test ${#SUB_MOD[@]} != 0; then
-	for PRJ in "${SUB_MOD[@]}"; do
+	for PRJ in "${SUB_MOD[@]//\/}"; do
 	    if (
 		cd src/$PRJ
 		git log --pretty=format:%d -1 |
@@ -87,8 +87,8 @@ pull()
 			basehash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"linux"'$|\1|p')
 			;;
 		esac
-		SUB_ON[${#SUB_ON[@]}]="$PRJ"
-		SUB_MOD=( ${SUB_MOD[@]/"$PRJ"} )
+		SUB_ON[${#SUB_ON[@]}]="/$PRJ/"
+		SUB_MOD=( ${SUB_MOD[@]/"/$PRJ/"} )
 	    else
 		echo "NOT refreshing $PRJ with local modifications!"
 		case "$PRJ" in
@@ -117,7 +117,7 @@ push()
 EOT
 	ALLDIRS=
 	includeslinux=0
-	for i in "${SUB_MOD[@]}"; do
+	for i in "${SUB_MOD[@]//\/}"; do
 	    echo "$i"
 	    ALLDIRS="$ALLDIRS src/$i"
 	    uphash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"$i"'$|\1|p')
@@ -230,13 +230,13 @@ status()
 {
     populatesubs "$@"
     if test ${#SUB_MOD[@]} != 0; then
-	echo modified: "${SUB_MOD[@]}"
+	echo modified: "${SUB_MOD[@]//\/}"
     fi
     if test ${#SUB_ON[@]} != 0; then
-	echo unmodified: "${SUB_ON[@]}"
+	echo unmodified: "${SUB_ON[@]//\/}"
     fi
     if test ${#SUB_OFF[@]} != 0; then
-	echo not checked out: "${SUB_OFF[@]}"
+	echo not checked out: "${SUB_OFF[@]//\/}"
     fi
 }
 
@@ -252,10 +252,10 @@ drop()
     populatesubs "$@"
     if test ${#SUB_MOD[@]} != 0; then
 	if test $force = 0; then
-	    echo "Local modifications exit in ${SUB_MOD[@]}, use -f for force."
+	    echo "Local modifications exit in ${SUB_MOD[@]//\/}, use -f for force."
 	    exit 1
 	fi
-	for PRJ in "${SUB_MOD[@]}"; do
+	for PRJ in "${SUB_MOD[@]//\/}"; do
 	    if test "$PRJ" = buildtool; then
 		echo 'Not dropping buildtool.'
 	    else
@@ -266,7 +266,7 @@ drop()
 	done
     fi
     if test ${#SUB_ON[@]} != 0; then
-	for PRJ in "${SUB_ON[@]}"; do
+	for PRJ in "${SUB_ON[@]//\/}"; do
 	    if test "$PRJ" = buildtool; then
 		echo 'Not dropping buildtool.'
 	    else
@@ -282,10 +282,10 @@ fetch()
 {
     populatesubs "$@"
     if test ${#SUB_MOD[@]} != 0; then
-	echo Not fetching ${SUB_MOD[@]}, use pull instead.
+	echo Not fetching ${SUB_MOD[@]//\/}, use pull instead.
     fi
     if test ${#SUB_OFF[@]} != 0; then
-	for PRJ in "${SUB_OFF[@]}"; do
+	for PRJ in "${SUB_OFF[@]//\/}"; do
 	    echo fetching $PRJ
 	    git submodule update src/$PRJ
 	done
