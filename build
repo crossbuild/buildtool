@@ -79,7 +79,10 @@ genhash()
 		flock -s 200
                 cd $FILE
 		if test "$dirty" && test "$(git status --porcelain -uall)"; then
-		    sha1sum $(git status --porcelain -uall | awk '{print $2}') 2>&1 |
+		    (
+			git show-ref --head | sed -ne 's| HEAD$| '"$FILE"'|p'
+			sha1sum $(git status --porcelain -uall | awk '{print $2}') 2>&1
+		    ) |
 		    sha1sum | sed -e "s|[[:space:]].*| $FILE|"
 		else
 		    git show-ref --head | sed -ne 's| HEAD$| '"$FILE"'|p'
