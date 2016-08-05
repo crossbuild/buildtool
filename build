@@ -1523,7 +1523,12 @@ fi
 
 mkdir -p "$states"
 if test $prepopulatespec = 0 -a -r $states/_prepopulate; then
-    prepopulate=$(cat $states/_prepopulate)
+    case $(cat $states/_prepopulate) in
+	link) prepopulate=link;;
+	copy) prepopulate=copy;;
+	no)   prepopulate=no;;
+	*)    echo "$prepopulate" > $states/_prepopulate;;
+    esac
 else
     echo "$prepopulate" > $states/_prepopulate
 fi
