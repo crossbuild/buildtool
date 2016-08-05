@@ -48,6 +48,11 @@ logerr()
     logmsg >&2 "$@"
 }
 
+debugmsg()
+{
+    test -z "$debug" || logmsg DEBUG: "$@"
+}
+
 forcerm()
 {
     rm -rf "$1" 2>/dev/null || chmod -R u+rwx "$1" 2>/dev/null && rm -rf "$1"
@@ -969,6 +974,7 @@ invoke()
 	genhash ${hashes//\[/\\\[} > "$states/$target/$recipe/hash"
 	local pkghash=$(sha1sum "$states/$target/$recipe/hash" | sed -e "s|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) .*|$target/$recipe/\1/\2|")
 	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
+	    debugmsg "build: retrieve: $target/$recipe ($PKGPOOL/.hashpool/$pkghash - $prepopulate)"
 	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
 	    mkdir -p $pool "$log"
 	    rm -f "$states/$target/$recipe/packages" "$states/$target/$recipe/nocache"
@@ -989,6 +995,7 @@ invoke()
 	    fi
 	    mv "$states/$target/$recipe/hash" "$states/$target/$recipe/done"
 	else
+	    debugmsg "build: build: $target/$recipe ($PKGPOOL/.hashpool/$pkghash - $prepopulate)"
 	    logmsg "$(printf '[%3u%%]' $progress) Building $target/$recipe"
 	    forcerm "$obj/$target/$recipe"
 	    mkdir -p "$blddir" "$log"
@@ -1026,6 +1033,8 @@ invoke()
 	    fi
 	fi
 	test "$release" && publishpackage $target $recipe || true
+    else
+	debugmsg "build: consistent: $target/$recipe"
     fi
 }
 
@@ -1298,6 +1307,7 @@ prepopulatespec=0
 purgepool=0
 keepbuilds=
 purgebuilds=0
+debug=
 verbose=
 whattodo=build
 garbagecollectdays=60
@@ -1388,6 +1398,9 @@ while test $# -gt 0; do
 	    ;;
 	--purgebuilds)
 	    purgebuilds=1
+	    ;;
+	--debug)
+	    debug=--debug
 	    ;;
 	--verbose)
 	    verbose=--verbose
@@ -1638,7 +1651,7 @@ else
 	cat "$states/_depmake"
     fi > "$states/_depmake_tmp"
     make $parallel -f "$states/_depmake_tmp" --no-print-directory \
-	BUILD="$0 --prepopulate=$prepopulate $dirty $keepbuilds $verbose --pkgpool=$PKGPOOL" "$target/$recipe"
+	BUILD="$0 --prepopulate=$prepopulate $dirty $keepbuilds $debug $verbose --pkgpool=$PKGPOOL" "$target/$recipe"
     rm "$states/_depmake_tmp"
 fi
 
