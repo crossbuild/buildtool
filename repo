@@ -56,12 +56,16 @@ populatesubs()
 
 pull()
 {
+    local dopull="$1"
+    shift
     if test -r .basehash.linux; then
 	basehash=$(cat .basehash.linux)
     else
 	basehash=$(git cat-file -p HEAD:src | sed -ne 's|^160000 commit \([0-9a-f]*\)[[:space:]]*'"linux"'$|\1|p')
     fi
-    git pull
+    if test "$dopull" = 1; then
+	git pull
+    fi
     if test -d .git/hooks -a -d hooks; then
 	for i in hooks/*; do
 	    rm -f ".git/$i"
@@ -105,7 +109,7 @@ push()
 {
     retryid=
     for retry in 0 1 2; do
-	pull "$@"
+	pull 1 "$@"
 	if test ${#SUB_MOD[@]} = 0; then
 	    echo No modifications to push.
 	    exit 1
@@ -303,15 +307,19 @@ switch()
     fi
     local branch="$1"
     git fetch
-    if ! git show "origin/$branch" >/dev/null 2>/dev/null; then
-	echo >&2 Unknown branch: $branch
-	exit 1
+    if git show "origin/$branch" >/dev/null 2>/dev/null; then
+	if ! git show "$branch" >/dev/null 2>/dev/null; then
+	    echo git branch -t "$branch" "origin/$branch"
+	fi
+	git checkout "$branch"
+	pull 1
+    else
+	if ! git checkout "$branch"; then
+	    echo >&2 Unknown branch or tag: $branch
+	    exit 1
+	fi
+	pull 0
     fi
-    if ! git show "$branch" >/dev/null 2>/dev/null; then
-	echo git branch -t "$branch" "origin/$branch"
-    fi
-    git checkout "$branch"
-    pull
 }
 
 diff()
@@ -380,7 +388,7 @@ case "$CMD" in
     drop)        drop "$@";;
     fetch)       fetch "$@";;
     git)         rootgit "$@";;
-    pull)        pull "$@";;
+    pull)        pull 1 "$@";;
     push)        push "$@";;
     status)      status "$@";;
     switch)      switch "$@";;
