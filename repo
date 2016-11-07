@@ -324,19 +324,27 @@ switch()
 
 diff()
 {
+    subsopts=""
+    dirty=""
+    if [[ $# > 0 && "${1}" = "--dirty" ]]; then
+        dirty=1
+        subsopts="--ignore-submodules=none"
+        shift
+        [[ $# > 1 ]] && echo "--dirty only allows one commit-id" && exit 1
+    fi
     git --no-pager diff --ignore-submodules --no-prefix "$@"
-    git --no-pager diff --raw "$@" src | while read MODEA MODEB HASHA HASHB MODTYPE MODULE; do
+    git --no-pager diff --raw $subsopts "$@" src | while read MODEA MODEB HASHA HASHB MODTYPE MODULE; do
 	if test \
 	    "$MODEA" = ":160000" -a \
 	    "$MODEB" = "160000" -a \
 	    "$MODTYPE" = "M"; then
 	    (
-        if test !  "$(ls -A $MODULE )"; then # check if submodul empty -> fetch submodule
+        if test "$dirty" != "1" && test !  "$(ls -A $MODULE )"; then # check if submodul empty -> fetch submodule
             echo "fetching $MODULE for diff"
             fetch $MODULE;
         fi
 		cd $MODULE
-		test "$HASHB" != 0000000... || HASHB=
+		test "$HASHB" = 0000000... || test "$dirty" = "1" && HASHB=
 		git --no-pager diff --src-prefix=$MODULE/ --dst-prefix=$MODULE/ ${HASHA/...} ${HASHB/...}
 	    )
 	else
@@ -349,8 +357,12 @@ usage()
 {
     cat <<EOT
 Usage:
-  repo diff <commit>{0,2}     Calculate a global diff. The specified coommits
-                              follow the same rules as for the regular
+  repo diff <commit>{0,2}     Calculate a global diff between committed
+                              changes. The specified commits follow the
+                              same rules as for the regular git diff command.
+  repo diff --dirty [commit]  Calculate a global diff against uncommited and
+                              unstaged changes in the workspace. The specified
+                              commit follows the same rules as for the regular
                               git diff command.
   repo drop [-f] [SUBMODULE]... Delete the checked out sources for the
                               specified submodules from the local disk.  If no
