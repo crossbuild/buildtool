@@ -1615,6 +1615,7 @@ case "$force" in
     target) forcerm "$states/$target";;
     all)    forcerm "$states";;
 esac
+mkdir -p "$states"
 
 if test $nodeps = 1; then
     invoke "$recipe" "$target"
