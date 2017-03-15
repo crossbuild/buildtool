@@ -960,6 +960,23 @@ detectpackagecollisions()
     done
 }
 
+isconsistent()
+{
+    local recipe="$1"
+    shift
+    local target="$1"
+    shift
+    local file
+    test -r "$states/$target/$recipe/done" &&
+    diff "$states/$target/$recipe/done" <(
+	genhash $(awk '{print $2}' "$states/$target/$recipe/done" || true)
+	) > /dev/null 2> /dev/null &&
+    test -z "$(
+	for file in $(cat "$states/$target/$recipe/packages" 2>/dev/null); do
+	    test -r "$pool/$file.meta" || echo 1
+	done)"
+}
+
 invoke()
 {
     local recipe="$1"
@@ -978,9 +995,7 @@ invoke()
     local blddir=$obj/$target/$recipe/build
     local destdir=$obj/$target/$recipe/destdir
     mkdir -p $states/_lock/src
-    if ! test -r "$states/$target/$recipe/done" ||
-	! diff "$states/$target/$recipe/done" <(genhash $(awk '{print $2}' "$states/$target/$recipe/done" || true)
-	) > /dev/null 2> /dev/null; then
+    if ! isconsistent "$recipe" "$target"; then
         mkdir -p "$states/$target/$recipe"
 	settings=$(getrecipe settings $target)
 	file=$(getrecipe $recipe $target)
