@@ -876,14 +876,16 @@ publishpackage()
     if ! test -r "$states/$target/$recipe/nocache" &&
 	! test -d "$HASHPOOL/$hash"; then
 	cmd="mkdir -p $HASHPOOL/$hash.$MANIFEST &&
-	    cp $log/$target-$recipe.log.gz $HASHPOOL/$hash.$MANIFEST/.log.gz"
+	    cp $log/$target-$recipe.log.gz $HASHPOOL/$hash.$MANIFEST/.log.gz &&
+	    cp $states/$target/$recipe/packages $HASHPOOL/$hash.$MANIFEST/.packages"
 	for pkg in $(<"$states/$target/$recipe/packages"); do
 	    local FORMAT=$(sed -ne 's|^format ||p' "$pool/$pkg.meta")
 	    test "$FORMAT" || FORMAT="$DEFAULTFORMAT"
 	    cmd="$cmd && cp $pool/$pkg.meta $HASHPOOL/$hash.$MANIFEST/$pkg.meta &&
 		cp $pool/$pkg.$FORMAT $HASHPOOL/$hash.$MANIFEST/$pkg.$FORMAT"
 	done
-	cmd="$cmd && ( mv -T $HASHPOOL/$hash.$MANIFEST $HASHPOOL/$hash &&
+	cmd="$cmd && ( cd $HASHPOOL/$hash.$MANIFEST && sha1sum * > .sha1sum ) && (
+	    mv -T $HASHPOOL/$hash.$MANIFEST $HASHPOOL/$hash &&
 	    mkdir -p $MANIFESTDIR &&
 	    echo $HASHPOOL/$hash > $MANIFESTDIR/$MANIFEST.done ||
 	    rm -rf $HASHPOOL/$hash.$MANIFEST )"
@@ -1028,7 +1030,8 @@ invoke()
 	rm -f "$states/$target/$recipe/done"
 	genhash ${hashes//\[/\\\[} > "$states/$target/$recipe/hash"
 	local pkghash=$(sha1sum "$states/$target/$recipe/hash" | sed -e "s|^\([0-9a-f][0-9a-f]\)\([0-9a-f]*\) .*|$target/$recipe/\1/\2|")
-	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash"; then
+	if test "$prepopulate" != no -a -d "$PKGPOOL/.hashpool/$pkghash" &&
+	    (cd "$PKGPOOL/.hashpool/$pkghash" && sha1sum -c --status .sha1sum); then
 	    debugmsg "build: retrieve: $target/$recipe ($PKGPOOL/.hashpool/$pkghash - $prepopulate)"
 	    logmsg "$(printf '[%3u%%]' $progress) Retrieving $target/$recipe"
 	    mkdir -p $pool "$log"
