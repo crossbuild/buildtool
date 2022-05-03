@@ -17,6 +17,8 @@
 #
 set -eu
 
+echo Hallo
+
 export LC_ALL=C
 
 case $0 in
